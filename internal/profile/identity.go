@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -119,11 +120,24 @@ func HasLoginEvidenceAt(appDataPath, cookiesPath string) bool {
 }
 
 func LoginLogOffsetAt(appDataPath string) int64 {
-	info, err := os.Stat(filepath.Join(appDataPath, "logs", "main.log"))
+	info, err := os.Stat(accountLogPath(appDataPath))
 	if err != nil {
 		return 0
 	}
 	return info.Size()
+}
+
+func accountLogPath(appDataPath string) string {
+	roaming := os.Getenv("APPDATA")
+	local := os.Getenv("LOCALAPPDATA")
+	if runtime.GOOS == "windows" && roaming != "" && local != "" &&
+		strings.EqualFold(filepath.Clean(appDataPath), filepath.Join(roaming, "Claude")) {
+		path := filepath.Join(local, "Claude", "Logs", "main.log")
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return filepath.Join(appDataPath, "logs", "main.log")
 }
 
 func LatestAccountLogStateSince(appDataPath string, offset int64, createdAt time.Time) AccountLogState {
@@ -147,7 +161,7 @@ func accountLogLinesSince(appDataPath string, offset int64, createdAt time.Time)
 	if createdAt.IsZero() {
 		return nil
 	}
-	path := filepath.Join(appDataPath, "logs", "main.log")
+	path := accountLogPath(appDataPath)
 	file, err := os.Open(path)
 	if err != nil {
 		return nil
