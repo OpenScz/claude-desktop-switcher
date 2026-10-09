@@ -102,6 +102,62 @@ func TestMSIXFallbackOwnsOnlyClaudePackageProcesses(t *testing.T) {
 	}
 }
 
+func TestMSIXDataPathFallsBackToExistingRoamingProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		packaged    bool
+		roaming     bool
+		roamingFile bool
+		wantRoaming bool
+	}{
+		{name: "existing roaming profile", roaming: true, wantRoaming: true},
+		{name: "packaged profile takes precedence", packaged: true, roaming: true},
+		{name: "uninitialized profiles keep packaged path"},
+		{name: "roaming path must be a directory", roamingFile: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := t.TempDir()
+			roaming := t.TempDir()
+			t.Setenv("LOCALAPPDATA", local)
+			t.Setenv("APPDATA", roaming)
+			packageDir := filepath.Join(local, "Packages", windowsPackageFamily)
+			packagedRoot := filepath.Join(packageDir, "LocalCache", "Roaming", "Claude")
+			roamingRoot := filepath.Join(roaming, "Claude")
+			paths := []string{packageDir}
+			if tc.packaged {
+				paths = append(paths, packagedRoot)
+			}
+			if tc.roaming {
+				paths = append(paths, roamingRoot)
+			}
+			for _, path := range paths {
+				if err := os.MkdirAll(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.roamingFile {
+				if err := os.WriteFile(roamingRoot, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := packagedRoot
+			if tc.wantRoaming {
+				want = roamingRoot
+			}
+			selected, alternatives := detectWindowsInstall()
+			for _, candidate := range append(alternatives, selected) {
+				if candidate.kind == installMSIX {
+					if candidate.root != want {
+						t.Fatalf("MSIX data path = %q, want %q", candidate.root, want)
+					}
+					return
+				}
+			}
+			t.Fatal("MSIX installation was not detected")
+		})
+	}
+}
+
 func TestPathWithinRejectsSiblingDirectory(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "AnthropicClaude")
 	if !pathWithin(filepath.Join(root, "app-1", "claude.exe"), root) {
