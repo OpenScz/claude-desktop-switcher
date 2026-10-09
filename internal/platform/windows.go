@@ -290,6 +290,14 @@ func (w *windowsPlatform) LoginWindowVisible() (bool, error) {
 	return found != 0, err
 }
 
+func (w *windowsPlatform) FocusDesktopWindow() (uintptr, error) {
+	hwnd, err := w.mainWindow()
+	if hwnd != 0 && err == nil {
+		focusWindow(hwnd)
+	}
+	return hwnd, err
+}
+
 func (w *windowsPlatform) mainWindow() (uintptr, error) {
 	pids, err := w.desktopProcessPaths()
 	if err != nil || len(pids) == 0 {

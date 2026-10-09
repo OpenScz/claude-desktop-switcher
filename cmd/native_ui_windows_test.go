@@ -15,6 +15,39 @@ func TestNativeBackupFileFilterUsesDoubleNULTerminator(t *testing.T) {
 	}
 }
 
+func TestNativeOverlayPlacementUsesOnlyClaudeWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		owner   uintptr
+		bounds  nativeRect
+		visible bool
+		want    bool
+	}{
+		{name: "secondary monitor with negative coordinates", owner: 42, bounds: nativeRect{-1800, 50, -800, 750}, visible: true, want: true},
+		{name: "no Claude window"},
+		{name: "hidden or minimized window", owner: 42, bounds: nativeRect{10, 20, 810, 620}},
+		{name: "zero width", owner: 42, bounds: nativeRect{10, 20, 10, 620}, visible: true},
+		{name: "zero height", owner: 42, bounds: nativeRect{10, 20, 810, 20}, visible: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queried := false
+			bounds, visible := nativeOverlayPlacement(tc.owner, func(hwnd uintptr) (nativeRect, bool) {
+				queried = true
+				if hwnd != tc.owner {
+					t.Fatalf("queried window %d, want owner %d", hwnd, tc.owner)
+				}
+				return tc.bounds, tc.visible
+			})
+			if visible != tc.want || tc.want && bounds != tc.bounds {
+				t.Fatalf("placement = %+v, %v; want %+v, %v", bounds, visible, tc.bounds, tc.want)
+			}
+			if tc.owner == 0 && queried {
+				t.Fatal("missing Claude window must not fall back to another window or desktop")
+			}
+		})
+	}
+}
+
 func TestDefaultBackupFilenameIdentifiesOnlyPasswordBackups(t *testing.T) {
 	now := time.Date(2026, 7, 23, 20, 55, 0, 0, time.Local)
 	if got := defaultBackupFilename(now, false); got != "claude-desktop-switcher-2026-07-23_2055.csb" {

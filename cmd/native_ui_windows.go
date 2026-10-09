@@ -11,6 +11,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"github.com/TinoA/claude-desktop-switcher/internal/platform"
 	"golang.org/x/sys/windows"
 )
 
@@ -31,6 +32,7 @@ const (
 	nativeWSPopup         = 0x80000000
 	nativeWSExLayered     = 0x00080000
 	nativeWSExTopmost     = 0x00000008
+	nativeWSExNoActivate  = 0x08000000
 	nativeWSExToolWindow  = 0x00000080
 	nativeWSExDialogFrame = 0x00000001
 	nativeWSTabStop       = 0x00010000
@@ -39,11 +41,10 @@ const (
 	nativeESAutoHScroll   = 0x00000080
 	nativeSMCXScreen      = 0
 	nativeSMCYScreen      = 1
-	nativeSMCXVirtual     = 78
-	nativeSMCYVirtual     = 79
-	nativeSMXVirtual      = 76
-	nativeSMYVirtual      = 77
 	nativeSWShow          = 5
+	nativeSWNoActivate    = 8
+	nativeSWPNoZOrder     = 0x0004
+	nativeSWPNoActivate   = 0x0010
 	nativeSWHide          = 0
 	nativeLayeredAlpha    = 0x00000002
 	nativeTimerID         = 1
@@ -92,6 +93,10 @@ var (
 	nativeGetWindowThread   = nativeUser32.NewProc("GetWindowThreadProcessId")
 	nativeAttachThreadInput = nativeUser32.NewProc("AttachThreadInput")
 	nativeGetMetrics        = nativeUser32.NewProc("GetSystemMetrics")
+	nativeGetWindowRect     = nativeUser32.NewProc("GetWindowRect")
+	nativeIsWindowVisible   = nativeUser32.NewProc("IsWindowVisible")
+	nativeIsIconic          = nativeUser32.NewProc("IsIconic")
+	nativeSetWindowPos      = nativeUser32.NewProc("SetWindowPos")
 	nativeSetLayered        = nativeUser32.NewProc("SetLayeredWindowAttributes")
 	nativeSetTimer          = nativeUser32.NewProc("SetTimer")
 	nativeKillTimer         = nativeUser32.NewProc("KillTimer")
@@ -196,6 +201,7 @@ type nativeOverlayState struct {
 	success bool
 	frame   int
 	icon    uintptr
+	owner   uintptr
 }
 
 var nativeInputWndProc = windows.NewCallback(nativeInputWindowProc)
@@ -538,24 +544,30 @@ func startNativeOverlay(message string, success bool, iconPaths ...string) *swit
 func runNativeOverlay(overlay *switchOverlay, message string, success bool, iconPath string) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	var owner uintptr
+	if provider, ok := platform.Current().(interface{ FocusDesktopWindow() (uintptr, error) }); ok {
+		owner, _ = provider.FocusDesktopWindow()
+	}
+	bounds, visible := nativeOverlayPlacement(owner, nativeWindowBounds)
+	if !visible {
+		overlay.ready <- nil
+		close(overlay.done)
+		return
+	}
 	if err := nativeRegisterOverlayClass(); err != nil {
 		overlay.ready <- err
 		close(overlay.done)
 		return
 	}
-	width, _, _ := nativeGetMetrics.Call(nativeSMCXVirtual)
-	height, _, _ := nativeGetMetrics.Call(nativeSMCYVirtual)
-	left, _, _ := nativeGetMetrics.Call(nativeSMXVirtual)
-	top, _, _ := nativeGetMetrics.Call(nativeSMYVirtual)
 	hInstance, _, _ := nativeGetModule.Call(0)
-	state := &nativeOverlayState{message: message, success: success}
+	state := &nativeOverlayState{message: message, success: success, owner: owner}
 	state.icon = nativeExtractIcon(iconPath)
 	hwnd, _, _ := nativeCreateWindow.Call(
-		nativeWSExLayered|nativeWSExTopmost|nativeWSExToolWindow,
+		nativeWSExLayered|nativeWSExToolWindow|nativeWSExNoActivate,
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("WindowsClaudeSwapOverlay"))),
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(ProductName))),
-		nativeWSPopup|nativeWSVisible,
-		left, top, width, height, 0, 0, hInstance, 0,
+		nativeWSPopup,
+		uintptr(bounds.left), uintptr(bounds.top), uintptr(bounds.right-bounds.left), uintptr(bounds.bottom-bounds.top), owner, 0, hInstance, 0,
 	)
 	if hwnd == 0 {
 		if state.icon != 0 {
@@ -571,9 +583,8 @@ func runNativeOverlay(overlay *switchOverlay, message string, success bool, icon
 	nativeOverlayStatesMu.Unlock()
 	nativeSetLayered.Call(hwnd, 0, 180, nativeLayeredAlpha)
 	nativeSetTimer.Call(hwnd, nativeTimerID, 125, 0)
-	nativeShowWindow.Call(hwnd, nativeSWShow)
+	nativeShowWindow.Call(hwnd, nativeSWNoActivate)
 	nativeUpdateWindow.Call(hwnd)
-	nativeSetForeground.Call(hwnd)
 	overlay.ready <- nil
 
 	var messageLoop nativeMSG
@@ -589,6 +600,22 @@ func runNativeOverlay(overlay *switchOverlay, message string, success bool, icon
 	delete(nativeOverlayStates, hwnd)
 	nativeOverlayStatesMu.Unlock()
 	close(overlay.done)
+}
+
+func nativeOverlayPlacement(owner uintptr, readBounds func(uintptr) (nativeRect, bool)) (nativeRect, bool) {
+	if owner == 0 {
+		return nativeRect{}, false
+	}
+	bounds, visible := readBounds(owner)
+	return bounds, visible && bounds.right > bounds.left && bounds.bottom > bounds.top
+}
+
+func nativeWindowBounds(hwnd uintptr) (nativeRect, bool) {
+	var bounds nativeRect
+	visible, _, _ := nativeIsWindowVisible.Call(hwnd)
+	minimized, _, _ := nativeIsIconic.Call(hwnd)
+	ok, _, _ := nativeGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&bounds)))
+	return bounds, ok != 0 && visible != 0 && minimized == 0
 }
 
 func nativeExtractIcon(path string) uintptr {
@@ -616,6 +643,13 @@ func nativeOverlayWindowProc(hwnd, message, wParam, lParam uintptr) uintptr {
 	}
 	switch message {
 	case nativeWMTimer:
+		bounds, visible := nativeOverlayPlacement(state.owner, nativeWindowBounds)
+		if !visible {
+			nativeShowWindow.Call(hwnd, nativeSWHide)
+			return 0
+		}
+		nativeSetWindowPos.Call(hwnd, 0, uintptr(bounds.left), uintptr(bounds.top), uintptr(bounds.right-bounds.left), uintptr(bounds.bottom-bounds.top), nativeSWPNoZOrder|nativeSWPNoActivate)
+		nativeShowWindow.Call(hwnd, nativeSWNoActivate)
 		state.frame++
 		nativeInvalidate.Call(hwnd, 0, 0)
 	case nativeWMPaint:
