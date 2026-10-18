@@ -33,9 +33,9 @@ func entryTitlesAndIDs(entries []sessionEntry) ([]string, []string) {
 
 func TestSessionMenuEntriesGroupSessionsUnderTheirProjects(t *testing.T) {
 	list := []sessions.Session{
-		{ID: "local_1", Title: "Găsește materiale și calculatoare", Project: "Sample Project One", LastActivity: sessionAt(10, 18, 15, 13)},
-		{ID: "local_2", Title: "Garden funcții spațiu server", Project: "Zinnia", LastActivity: sessionAt(10, 18, 7, 35)},
-		{ID: "local_3", Title: "Rethink the layout", Project: "Sample Project One", LastActivity: sessionAt(10, 17, 17, 35)},
+		{ID: "local_1", Title: "Găsește materiale și calculatoare", Group: "Sample Project One", LastActivity: sessionAt(10, 18, 15, 13)},
+		{ID: "local_2", Title: "Garden funcții spațiu server", Group: "Zinnia", LastActivity: sessionAt(10, 18, 7, 35)},
+		{ID: "local_3", Title: "Rethink the layout", Group: "Sample Project One", LastActivity: sessionAt(10, 17, 17, 35)},
 	}
 
 	titles, ids := entryTitlesAndIDs(sessionMenuEntries(list, sessionTestNow))
@@ -56,7 +56,7 @@ func TestSessionMenuEntriesGroupSessionsUnderTheirProjects(t *testing.T) {
 func TestSessionMenuEntriesFitTheMenuWhenEverySessionHasItsOwnProject(t *testing.T) {
 	var list []sessions.Session
 	for index := range recentSessionsPerAccount {
-		list = append(list, sessions.Session{ID: fmt.Sprintf("local_%d", index), Title: "Session", Project: fmt.Sprintf("Project %d", index), LastActivity: sessionTestNow})
+		list = append(list, sessions.Session{ID: fmt.Sprintf("local_%d", index), Title: "Session", Group: fmt.Sprintf("Project %d", index), LastActivity: sessionTestNow})
 	}
 	if entries := sessionMenuEntries(list, sessionTestNow); len(entries) > sessionMenuSlots {
 		t.Fatalf("%d entries do not fit %d menu slots", len(entries), sessionMenuSlots)
@@ -73,8 +73,8 @@ func TestSessionMenuEntriesWithoutSessions(t *testing.T) {
 func TestSessionMenuEntriesKeepTitlesSafeForTheMenu(t *testing.T) {
 	long := strings.Repeat("abcdefghij", 7)
 	list := []sessions.Session{
-		{ID: "local_1", Title: "Q&A\x00 notes\nfor\u202e R&D", Project: "R&D lab", LastActivity: sessionAt(10, 18, 9, 5)},
-		{ID: "local_2", Title: long, Project: "R&D lab", LastActivity: sessionAt(10, 18, 9, 0)},
+		{ID: "local_1", Title: "Q&A\x00 notes\nfor\u202e R&D", Group: "R&D lab", LastActivity: sessionAt(10, 18, 9, 5)},
+		{ID: "local_2", Title: long, Group: "R&D lab", LastActivity: sessionAt(10, 18, 9, 0)},
 	}
 
 	titles, _ := entryTitlesAndIDs(sessionMenuEntries(list, sessionTestNow))
@@ -109,7 +109,7 @@ func TestSessionTimeLabel(t *testing.T) {
 }
 
 func TestContinueSessionPromptSaysWhatTheSwitchWillDo(t *testing.T) {
-	session := sessions.Session{ID: "local_1", Title: "Găsește materiale și calculatoare, scrie e-mailurile", Project: "Sample Project One", LastActivity: sessionAt(10, 18, 15, 13)}
+	session := sessions.Session{ID: "local_1", Title: "Găsește materiale și calculatoare, scrie e-mailurile", Group: "Sample Project One", LastActivity: sessionAt(10, 18, 15, 13)}
 
 	title, message := continueSessionPrompt(session, "private@accounts.test", nil, sessionTestNow)
 
@@ -169,5 +169,33 @@ func TestStopWorkNoticeListsAtMostFiveSessions(t *testing.T) {
 		"• One\n• Two lines\n• Three\n• Four\n• Five\n• and 2 more\n"
 	if got := stopWorkNotice(working); got != want {
 		t.Fatalf("notice = %q"+"\nwant %q", got, want)
+	}
+}
+
+func TestSessionMenuEntriesFollowTheSidebar(t *testing.T) {
+	at := sessionAt(10, 18, 12, 0)
+	list := []sessions.Session{
+		{ID: "local_a", Title: "Switcher", Group: "SwitcherGroups", GroupRank: 3, ParentID: "local_b", LastActivity: at},
+		{ID: "local_c", Title: "Lectura", Group: "SampleRepoB", LastActivity: at},
+		{ID: "local_b", Title: "Stabilize", Group: "SwitcherGroups", GroupRank: 3, LastActivity: at},
+		{ID: "local_d", Title: "Harden", Group: "SampleRepoB", ParentID: "local_c", LastActivity: at},
+		{ID: "local_e", Title: "Video", Group: "Demo Video Studio", LastActivity: at},
+		{ID: "local_f", Title: "Started elsewhere", Group: "SampleRepoB", ParentID: "local_missing", LastActivity: at},
+		{ID: "local_g", Title: "Loop one", Group: "Loops", ParentID: "local_h", LastActivity: at},
+		{ID: "local_h", Title: "Loop two", Group: "Loops", ParentID: "local_g", LastActivity: at},
+	}
+
+	titles, ids := entryTitlesAndIDs(sessionMenuEntries(list, sessionTestNow))
+
+	suffix := "\ttoday 12:00"
+	wantTitles := []string{
+		"SwitcherGroups", "Switcher" + suffix, "Stabilize" + suffix,
+		"Demo Video Studio", "Video" + suffix,
+		"Loops", "Loop one" + suffix, "└ Loop two" + suffix,
+		"SampleRepoB", "Lectura" + suffix, "└ Harden" + suffix, "Started elsewhere" + suffix,
+	}
+	wantIDs := []string{"", "local_a", "local_b", "", "local_e", "", "local_g", "local_h", "", "local_c", "local_d", "local_f"}
+	if !reflect.DeepEqual(titles, wantTitles) || !reflect.DeepEqual(ids, wantIDs) {
+		t.Fatalf("entries = %q %q\nwant %q %q", titles, ids, wantTitles, wantIDs)
 	}
 }

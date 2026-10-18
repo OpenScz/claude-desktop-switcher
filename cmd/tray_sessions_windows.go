@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -278,32 +279,83 @@ func (s *trayState) claudeStateSnapshot() (bool, string) {
 	return s.claudeRunning, s.activeProfile
 }
 
+// The groups follow Claude's sidebar: the user's own groups first, in their
+// sidebar order, then the repository groups by name.
 func sessionMenuEntries(list []sessions.Session, now time.Time) []sessionEntry {
 	if len(list) == 0 {
 		return []sessionEntry{{title: "No Claude Code sessions yet"}}
 	}
-	var projects []string
-	byProject := make(map[string][]sessions.Session)
+	var groups []string
+	rank := make(map[string]int)
+	members := make(map[string][]sessions.Session)
 	for _, session := range list {
-		if _, ok := byProject[session.Project]; !ok {
-			projects = append(projects, session.Project)
+		if _, ok := members[session.Group]; !ok {
+			groups = append(groups, session.Group)
+			rank[session.Group] = session.GroupRank
 		}
-		byProject[session.Project] = append(byProject[session.Project], session)
+		members[session.Group] = append(members[session.Group], session)
 	}
-	entries := make([]sessionEntry, 0, len(projects)+len(list))
-	for _, project := range projects {
-		entries = append(entries, sessionEntry{title: menuLabel(plainText(project))})
-		for _, session := range byProject[project] {
-			title := menuLabel(shortTitle(session.Title)) + "\t" + sessionTimeLabel(session.LastActivity, now)
-			entries = append(entries, sessionEntry{title: title, session: &session})
+	sort.SliceStable(groups, func(i, j int) bool {
+		left, right := rank[groups[i]], rank[groups[j]]
+		if (left > 0) != (right > 0) {
+			return left > 0
 		}
+		if left != right {
+			return left < right
+		}
+		return strings.ToLower(groups[i]) < strings.ToLower(groups[j])
+	})
+	entries := make([]sessionEntry, 0, len(groups)+len(list))
+	for _, group := range groups {
+		entries = append(entries, sessionEntry{title: menuLabel(plainText(group))})
+		entries = appendGroupSessions(entries, members[group], rank[group] == 0, now)
+	}
+	return entries
+}
+
+// The sidebar shows a side session under the session that started it, except
+// in groups the user made.
+func appendGroupSessions(entries []sessionEntry, group []sessions.Session, nest bool, now time.Time) []sessionEntry {
+	listed := make(map[string]bool, len(group))
+	for _, session := range group {
+		listed[session.ID] = true
+	}
+	nested := func(session sessions.Session) bool {
+		return nest && session.ParentID != "" && session.ParentID != session.ID && listed[session.ParentID]
+	}
+	children := make(map[string][]sessions.Session)
+	for _, session := range group {
+		if nested(session) {
+			children[session.ParentID] = append(children[session.ParentID], session)
+		}
+	}
+	placed := make(map[string]bool, len(group))
+	var add func(session sessions.Session, prefix string)
+	add = func(session sessions.Session, prefix string) {
+		if placed[session.ID] {
+			return
+		}
+		placed[session.ID] = true
+		title := prefix + menuLabel(shortTitle(session.Title)) + "\t" + sessionTimeLabel(session.LastActivity, now)
+		entries = append(entries, sessionEntry{title: title, session: &session})
+		for _, child := range children[session.ID] {
+			add(child, "└ ")
+		}
+	}
+	for _, session := range group {
+		if !nested(session) {
+			add(session, "")
+		}
+	}
+	for _, session := range group {
+		add(session, "")
 	}
 	return entries
 }
 
 func continueSessionPrompt(session sessions.Session, target string, working []string, now time.Time) (string, string) {
 	message := plainText(session.Title) + "\n" +
-		plainText(session.Project) + " · last activity " + sessionTimeLabel(session.LastActivity, now) + "\n\n" +
+		plainText(session.Group) + " · last activity " + sessionTimeLabel(session.LastActivity, now) + "\n\n" +
 		"Claude Desktop will close and reopen on " + target + " (about half a minute), then this session opens."
 	if len(working) > 0 {
 		message += "\n\n" + strings.TrimSuffix(stopWorkNotice(working), "\n")

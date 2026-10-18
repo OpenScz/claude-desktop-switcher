@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,24 +193,110 @@ func TestRecentKeepsWorktreeSessionsWithTheAccountHoldingTheirFolder(t *testing.
 	assertListed(t, result, accountB, "local_b1")
 }
 
-func TestRecentNamesTheProjectAfterTheFolderTheSessionStartedIn(t *testing.T) {
+func (f *fixture) writeJSON(name string, value any) {
+	f.t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.MkdirAll(f.appData, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.appData, name), data, 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func anchor(root string) []map[string]string {
+	return []map[string]string{{"gitRoot": root, "commonDir": filepath.Join(root, ".git")}}
+}
+
+func TestRecentGroupsSessionsLikeClaudesSidebar(t *testing.T) {
 	f := newFixture(t)
-	worktree := f.folder("Sample Project One", ".claude", "worktrees", "hopeful-wescoff")
+	parent := f.folder("Sample Project One")
 	child := f.folder("Sample Second App")
-	plain := f.folder("FridgeChef")
-	f.record(accountA, "local_w", map[string]any{"cliSessionId": "c1", "title": "Worktree", "cwd": worktree, "lastActivityAt": 3000})
-	f.record(accountA, "local_o", map[string]any{"cliSessionId": "c2", "title": "Started in Other", "cwd": worktree, "originCwd": child, "lastActivityAt": 2000})
-	f.record(accountA, "local_p", map[string]any{"cliSessionId": "c3", "title": "  ", "cwd": plain, "lastActivityAt": 1000})
+	video := f.folder("Demo Video Studio")
+	budgeting := f.folder("Budgeting")
+	plain := f.folder("Notebook folder")
+	worktree := f.folder("Lab One", ".claude", "worktrees", "hopeful-wescoff")
+	f.writeJSON(worktreesFileName, map[string]any{
+		"worktrees": map[string]any{},
+		"originPins": map[string]any{
+			filepath.Join(parent, ".git"): map[string]any{"repo": "exampleuser/Sample-Project-One", "folder": parent},
+			filepath.Join(video, ".git"):  map[string]any{"none": true, "folder": video},
+		},
+		"originUrls": map[string]any{
+			strings.ToLower(budgeting): map[string]any{"url": "https://github.com/exampleuser/SampleRepoA.git"},
+		},
+	})
+	scope := accountA + "/" + org
+	f.writeJSON(configFileName, map[string]any{
+		"mcpServers": map[string]any{"example": map[string]any{"env": map[string]any{"NOT_READ": "x"}}},
+		"preferences": map[string]any{"epitaxyPrefs": map[string]any{
+			"dframe-group-scopes": map[string]any{scope: map[string]any{
+				"groups":      []any{map[string]any{"id": "cg-1", "name": "SwitcherGroups"}},
+				"assignments": map[string]any{"code:local_switcher": "cg-1"},
+			}},
+			"dframe-code-sections": map[string]any{scope: map[string]any{
+				"sections": []any{
+					map[string]any{"id": "pinned", "kind": "pinned", "order": 0},
+					map[string]any{"id": "cg-1", "kind": "manual", "order": 2},
+				},
+			}},
+		}},
+	})
+	childAnchor := []map[string]string{{"gitRoot": child, "commonDir": filepath.Join(parent, ".git")}}
+	f.record(accountA, "local_switcher", map[string]any{"cliSessionId": "c1", "title": "Switcher", "cwd": parent, "gitAnchors": anchor(parent), "lastActivityAt": 7000})
+	f.record(accountA, "local_child", map[string]any{"cliSessionId": "c2", "title": "Other", "cwd": child, "gitAnchors": childAnchor, "lastActivityAt": 6000})
+	f.record(accountA, "local_video", map[string]any{"cliSessionId": "c3", "title": "Video", "cwd": video, "gitAnchors": anchor(video), "lastActivityAt": 5000})
+	f.record(accountA, "local_budgeting", map[string]any{"cliSessionId": "c4", "title": "Budgeting", "cwd": budgeting, "gitAnchors": anchor(budgeting), "lastActivityAt": 4000})
+	f.record(accountA, "local_plain", map[string]any{"cliSessionId": "c5", "title": "Plain git folder", "cwd": plain, "gitAnchors": anchor(plain), "lastActivityAt": 3000})
+	f.record(accountA, "local_side", map[string]any{"cliSessionId": "c6", "title": "Side", "cwd": plain, "gitAnchors": anchor(plain), "lastActivityAt": 2500,
+		"spawnedFrom": map[string]any{"sessionId": "local_plain", "sideSession": true}})
+	f.record(accountA, "local_started", map[string]any{"cliSessionId": "c7", "title": "  ", "cwd": worktree, "lastActivityAt": 2000,
+		"spawnedFrom": map[string]any{"sessionId": "local_plain"}})
 
 	got := f.recent("", 10, accountA)[profile.AccountUUIDHash(accountA)]
 
 	want := []Session{
-		{ID: "local_w", Title: "Worktree", Project: "Sample Project One", LastActivity: time.UnixMilli(3000)},
-		{ID: "local_o", Title: "Started in Other", Project: "Sample Second App", LastActivity: time.UnixMilli(2000)},
-		{ID: "local_p", Title: "FridgeChef", Project: "FridgeChef", LastActivity: time.UnixMilli(1000)},
+		{ID: "local_switcher", Title: "Switcher", Group: "SwitcherGroups", GroupRank: 3, LastActivity: time.UnixMilli(7000)},
+		{ID: "local_child", Title: "Other", Group: "Sample-Project-One", LastActivity: time.UnixMilli(6000)},
+		{ID: "local_video", Title: "Video", Group: "Demo Video Studio", LastActivity: time.UnixMilli(5000)},
+		{ID: "local_budgeting", Title: "Budgeting", Group: "SampleRepoA", LastActivity: time.UnixMilli(4000)},
+		{ID: "local_plain", Title: "Plain git folder", Group: "Notebook folder", LastActivity: time.UnixMilli(3000)},
+		{ID: "local_side", Title: "Side", Group: "Notebook folder", ParentID: "local_plain", LastActivity: time.UnixMilli(2500)},
+		{ID: "local_started", Title: "hopeful-wescoff", Group: "Lab One", LastActivity: time.UnixMilli(2000)},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sessions = %+v\nwant %+v", got, want)
+	}
+}
+
+func TestRecentGroupsSessionsWithoutClaudesConfiguration(t *testing.T) {
+	f := newFixture(t)
+	child := f.folder("Sample Second App")
+	f.record(accountA, "local_o", map[string]any{"cliSessionId": "c1", "title": "Started in Other", "cwd": f.folder("Sample Project One"), "originCwd": child, "lastActivityAt": 1000})
+	f.writeJSON(configFileName, "not the expected shape")
+
+	got := f.recent("", 10, accountA)[profile.AccountUUIDHash(accountA)]
+
+	if len(got) != 1 || got[0].Group != "Sample Second App" || got[0].GroupRank != 0 {
+		t.Fatalf("sessions = %+v", got)
+	}
+}
+
+func TestRepositoryFromOrigin(t *testing.T) {
+	for origin, want := range map[string]string{
+		"exampleuser/SampleRepoB":                    "SampleRepoB",
+		"https://github.com/exampleuser/Zinnia.git":  "Zinnia",
+		"https://github.com/exampleuser/Zinnia.git/": "Zinnia",
+		"git@github.com:exampleuser/SampleRepoA.git": "SampleRepoA",
+		"Sample-Project-One":                         "Sample-Project-One",
+		"":                                           "",
+	} {
+		if got := repositoryFromOrigin(origin); got != want {
+			t.Errorf("repositoryFromOrigin(%q) = %q, want %q", origin, got, want)
+		}
 	}
 }
 

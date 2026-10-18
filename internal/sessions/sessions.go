@@ -18,16 +18,23 @@ import (
 const (
 	recordsDirName    = "claude-code-sessions"
 	worktreesFileName = "git-worktrees.json"
+	configFileName    = "claude_desktop_config.json"
 	maxFileBytes      = 16 << 20
 )
 
 // Claude Desktop ignores claude://code/continue links whose session has any other form.
 var continueIDPattern = regexp.MustCompile(`^local_[A-Za-z0-9-]{1,64}$`)
 
+// Group is the heading Claude's sidebar shows the session under. GroupRank is
+// 0 for a group Claude names after the repository or folder, and from 1 on, in
+// sidebar order, for a group the user made. ParentID is set for a side
+// session, which the sidebar shows under the session that started it.
 type Session struct {
 	ID           string
 	Title        string
-	Project      string
+	Group        string
+	GroupRank    int
+	ParentID     string
 	LastActivity time.Time
 }
 
@@ -47,6 +54,14 @@ type record struct {
 	TranscriptUnavailable bool    `json:"transcriptUnavailable"`
 	CreatedAt             float64 `json:"createdAt"`
 	LastActivityAt        float64 `json:"lastActivityAt"`
+	GitAnchors            []struct {
+		GitRoot   string `json:"gitRoot"`
+		CommonDir string `json:"commonDir"`
+	} `json:"gitAnchors"`
+	SpawnedFrom *struct {
+		SessionID   string `json:"sessionId"`
+		SideSession bool   `json:"sideSession"`
+	} `json:"spawnedFrom"`
 }
 
 type cachedRecord struct {
@@ -63,6 +78,7 @@ type Reader struct {
 
 type candidate struct {
 	account string
+	scope   string
 	order   int
 	record  record
 }
@@ -70,10 +86,11 @@ type candidate struct {
 func (r *Reader) Recent(appData string, accounts []string, active string, limit int) (map[string][]Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	leases, err := readLeases(filepath.Join(appData, worktreesFileName))
+	git, err := readGit(filepath.Join(appData, worktreesFileName))
 	if err != nil {
 		return nil, err
 	}
+	groups := readSidebarGroups(filepath.Join(appData, configFileName))
 	order := make(map[string]int, len(accounts))
 	for index, account := range accounts {
 		if _, seen := order[account]; account != "" && !seen {
@@ -117,10 +134,10 @@ func (r *Reader) Recent(appData string, accounts []string, active string, limit 
 				path := filepath.Join(dir, name)
 				seen[path] = true
 				rec, ok := r.load(path, entry)
-				if !ok || !continuable(rec, leases) {
+				if !ok || !continuable(rec, git.leases) {
 					continue
 				}
-				next := candidate{account: account, order: index, record: rec}
+				next := candidate{account: account, scope: accountDir.Name() + "/" + orgDir.Name(), order: index, record: rec}
 				if current, exists := homes[rec.CLISessionID]; !exists || next.before(current, active) {
 					homes[rec.CLISessionID] = next
 				}
@@ -134,7 +151,7 @@ func (r *Reader) Recent(appData string, accounts []string, active string, limit 
 	}
 	result := make(map[string][]Session)
 	for _, home := range homes {
-		result[home.account] = append(result[home.account], home.session())
+		result[home.account] = append(result[home.account], home.session(git, groups))
 	}
 	for account, list := range result {
 		sort.Slice(list, func(i, j int) bool {
@@ -200,17 +217,27 @@ func (c candidate) before(other candidate, active string) bool {
 	return c.record.SessionID < other.record.SessionID
 }
 
-func (c candidate) session() Session {
+func (c candidate) session(git gitState, groups map[string]map[string]sidebarGroup) Session {
 	title := strings.TrimSpace(c.record.Title)
 	if title == "" {
 		title = filepath.Base(c.record.Cwd)
 	}
-	return Session{
+	session := Session{
 		ID:           c.record.SessionID,
 		Title:        title,
-		Project:      projectName(c.record),
+		Group:        git.repositoryName(c.record),
 		LastActivity: time.UnixMilli(int64(c.record.lastActivity())),
 	}
+	if session.Group == "" {
+		session.Group = projectName(c.record)
+	}
+	if group, ok := groups[strings.ToLower(c.scope)]["code:"+c.record.SessionID]; ok {
+		session.Group, session.GroupRank = group.name, group.rank
+	}
+	if c.record.SpawnedFrom != nil && c.record.SpawnedFrom.SideSession {
+		session.ParentID = c.record.SpawnedFrom.SessionID
+	}
+	return session
 }
 
 func (r record) lastActivity() float64 {
@@ -302,27 +329,145 @@ func hostedBy(appData, id string) bool {
 	return false
 }
 
-func readLeases(path string) (map[string]string, error) {
+type gitState struct {
+	leases map[string]string
+	pins   map[string]string
+	urls   map[string]string
+}
+
+func readGit(path string) (gitState, error) {
 	data, err := readShared(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return gitState{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return gitState{}, err
 	}
 	var file struct {
 		Worktrees map[string]struct {
 			LeasedBy string `json:"leasedBy"`
 		} `json:"worktrees"`
+		OriginPins map[string]struct {
+			Repo   string `json:"repo"`
+			None   bool   `json:"none"`
+			Folder string `json:"folder"`
+		} `json:"originPins"`
+		OriginURLs map[string]struct {
+			URL string `json:"url"`
+		} `json:"originUrls"`
 	}
 	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, err
+		return gitState{}, err
 	}
-	leases := make(map[string]string, len(file.Worktrees))
+	git := gitState{leases: make(map[string]string), pins: make(map[string]string), urls: make(map[string]string)}
 	for name, worktree := range file.Worktrees {
-		leases[name] = worktree.LeasedBy
+		git.leases[name] = worktree.LeasedBy
 	}
-	return leases, nil
+	for commonDir, pin := range file.OriginPins {
+		switch {
+		case pin.Repo != "":
+			git.pins[pathKey(commonDir)] = repositoryFromOrigin(pin.Repo)
+		case pin.None && pin.Folder != "":
+			git.pins[pathKey(commonDir)] = filepath.Base(pin.Folder)
+		}
+	}
+	for folder, origin := range file.OriginURLs {
+		if name := repositoryFromOrigin(origin.URL); name != "" {
+			git.urls[pathKey(folder)] = name
+		}
+	}
+	return git, nil
+}
+
+// Claude's sidebar names a session's group after the repository of its first
+// git anchor: the origin Claude pinned for it, else its origin URL, else the
+// repository folder.
+func (g gitState) repositoryName(rec record) string {
+	if len(rec.GitAnchors) == 0 || rec.GitAnchors[0].GitRoot == "" {
+		return ""
+	}
+	anchor := rec.GitAnchors[0]
+	if name := g.pins[pathKey(anchor.CommonDir)]; name != "" {
+		return name
+	}
+	if name := g.urls[pathKey(anchor.GitRoot)]; name != "" {
+		return name
+	}
+	return filepath.Base(anchor.GitRoot)
+}
+
+func repositoryFromOrigin(origin string) string {
+	origin = strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(origin), "/"), ".git")
+	return origin[strings.LastIndexAny(origin, "/:")+1:]
+}
+
+func pathKey(path string) string {
+	return strings.ToLower(filepath.Clean(path))
+}
+
+type sidebarGroup struct {
+	name string
+	rank int
+}
+
+// Groups the user made in Claude's sidebar live in its desktop configuration,
+// per account and organization. Only these fields are read from that file.
+func readSidebarGroups(path string) map[string]map[string]sidebarGroup {
+	data, err := readShared(path)
+	if err != nil {
+		return nil
+	}
+	var config struct {
+		Preferences struct {
+			EpitaxyPrefs struct {
+				GroupScopes map[string]struct {
+					Groups []struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+					} `json:"groups"`
+					Assignments map[string]string `json:"assignments"`
+				} `json:"dframe-group-scopes"`
+				CodeSections map[string]struct {
+					Sections []struct {
+						ID    string `json:"id"`
+						Kind  string `json:"kind"`
+						Order int    `json:"order"`
+					} `json:"sections"`
+				} `json:"dframe-code-sections"`
+			} `json:"epitaxyPrefs"`
+		} `json:"preferences"`
+	}
+	if json.Unmarshal(data, &config) != nil {
+		return nil
+	}
+	prefs := config.Preferences.EpitaxyPrefs
+	result := make(map[string]map[string]sidebarGroup, len(prefs.GroupScopes))
+	for scope, groupScope := range prefs.GroupScopes {
+		ranks := make(map[string]int)
+		for _, section := range prefs.CodeSections[scope].Sections {
+			if section.Kind == "manual" {
+				ranks[section.ID] = section.Order + 1
+			}
+		}
+		named := make(map[string]sidebarGroup, len(groupScope.Groups))
+		for index, group := range groupScope.Groups {
+			rank, ok := ranks[group.ID]
+			if !ok {
+				rank = 1000 + index
+			}
+			if name := strings.TrimSpace(group.Name); name != "" {
+				named[group.ID] = sidebarGroup{name: name, rank: rank}
+			}
+		}
+		assigned := make(map[string]sidebarGroup, len(groupScope.Assignments))
+		for key, groupID := range groupScope.Assignments {
+			if group, ok := named[groupID]; ok {
+				assigned[key] = group
+			}
+		}
+		result[strings.ToLower(scope)] = assigned
+	}
+	return result
 }
 
 func readShared(path string) ([]byte, error) {
