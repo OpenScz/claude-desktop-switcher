@@ -41,6 +41,12 @@ recovered from the pending workflow state on the next tray start.
 5. Reopen Claude Desktop and report it active only after signed-in state is
    verified.
 
+Claude Desktop hides in the system tray when its window closes, so the close
+sequence normally ends with `taskkill` and Claude's own quit cleanup does not
+run. `WM_ENDSESSION` is no way around this: Electron ends the process about
+40 ms after that message, before an asynchronous cleanup can finish, so the
+switcher does not send it.
+
 ### Delete
 
 When Claude Desktop is open, the verified active profile is protected. When it
@@ -62,6 +68,15 @@ identities, and replaces the store through a recoverable staged operation.
 - Keep one tray process per Windows user.
 - Use atomic or recoverable profile-store mutations.
 - Preserve non-account Claude settings while swapping account state.
+- Pause background profile reads (menu refresh, email discovery) while a
+  switch, an account addition or any operation lock is active: Windows refuses
+  to rename a folder while a file inside it is open.
+- Retry profile-store renames for a few seconds when Windows reports an access,
+  sharing or lock violation, and keep the original in place if it persists.
+- Share one `EnumWindows` callback: Go never frees Windows callbacks and stops
+  the process after 2000 of them.
+- Show progress in a small card that never takes focus, clicks or the taskbar.
+- Keep cobra's console guard disabled, so a tray started by Explorer opens.
 
 `cmd/tray_windows.go` intentionally remains a single file for the first stable
 release. A later cleanup may move related functions into files in the same
