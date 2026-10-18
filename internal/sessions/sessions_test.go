@@ -19,15 +19,27 @@ const (
 )
 
 type fixture struct {
-	t       *testing.T
-	appData string
-	folders string
-	reader  Reader
+	t         *testing.T
+	appData   string
+	claudeDir string
+	folders   string
+	reader    Reader
 }
 
 func newFixture(t *testing.T) *fixture {
 	root := t.TempDir()
-	return &fixture{t: t, appData: filepath.Join(root, "Claude"), folders: filepath.Join(root, "Projects")}
+	return &fixture{t: t, appData: filepath.Join(root, "Claude"), claudeDir: filepath.Join(root, ".claude"), folders: filepath.Join(root, "Projects")}
+}
+
+func (f *fixture) process(name, content string) {
+	f.t.Helper()
+	dir := filepath.Join(f.claudeDir, "sessions")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 func (f *fixture) folder(parts ...string) string {
@@ -274,5 +286,35 @@ func TestRecentReportsAnUnreadableFolderReservationFile(t *testing.T) {
 func TestContinueURL(t *testing.T) {
 	if got := ContinueURL("local_55555555-5555-4555-8555-555555555555"); got != "claude://code/continue?session=local_55555555-5555-4555-8555-555555555555" {
 		t.Fatalf("ContinueURL() = %q", got)
+	}
+}
+
+func TestWorkingListsTheBusySessionsOfTheMainWindow(t *testing.T) {
+	f := newFixture(t)
+	folder := f.folder("Sample Project One")
+	f.record(accountA, "local_a1", map[string]any{"cliSessionId": "c1", "cwd": folder})
+	f.record(accountA, "local_a2", map[string]any{"cliSessionId": "c2", "cwd": folder})
+	f.record(accountB, "local_b1", map[string]any{"cliSessionId": "c3", "cwd": folder})
+	f.process("101.json", `{"pid":101,"procStart":"11","status":"busy","entrypoint":"claude-desktop","hostSessionId":"local_a1","name":"Planificare rapidă mesei"}`)
+	f.process("102.json", `{"pid":102,"procStart":"12","status":"busy","entrypoint":"claude-desktop","hostSessionId":"local_b1","name":" "}`)
+	f.process("103.json", `{"pid":103,"procStart":"13","status":"idle","entrypoint":"claude-desktop","hostSessionId":"local_a2","name":"Waiting for the next message"}`)
+	f.process("104.json", `{"pid":104,"procStart":"14","status":"busy","entrypoint":"cli","hostSessionId":"local_a2","name":"In a terminal"}`)
+	f.process("105.json", `{"pid":105,"procStart":"15","status":"busy","entrypoint":"claude-desktop","hostSessionId":"local_elsewhere","name":"In a separate window"}`)
+	f.process("106.json", `{"pid":106,"procStart":"16","status":"busy","entrypoint":"claude-desktop","hostSessionId":"local_a2","name":"Ended without cleanup"}`)
+	f.process("107.json", `{"pid":`)
+	f.process("101.key", "not a session")
+
+	running := func(pid int, procStart string) bool { return pid != 106 }
+	got := working(f.claudeDir, f.appData, running)
+
+	if want := []string{"Planificare rapidă mesei", "Untitled session"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("working sessions = %q, want %q", got, want)
+	}
+}
+
+func TestWorkingWithoutRunningSessions(t *testing.T) {
+	f := newFixture(t)
+	if got := working(f.claudeDir, f.appData, func(int, string) bool { return true }); len(got) != 0 {
+		t.Fatalf("working sessions = %q", got)
 	}
 }

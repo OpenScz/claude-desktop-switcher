@@ -232,6 +232,76 @@ func projectName(rec record) string {
 	return filepath.Base(folder)
 }
 
+// Claude Code keeps one file per running process in <claudeDir>/sessions, and
+// marks it busy while a turn runs; a process that ended may leave it behind.
+type processRecord struct {
+	PID           int    `json:"pid"`
+	ProcStart     string `json:"procStart"`
+	Status        string `json:"status"`
+	Entrypoint    string `json:"entrypoint"`
+	HostSessionID string `json:"hostSessionId"`
+	Name          string `json:"name"`
+}
+
+func Working(claudeDir, appData string) []string {
+	return working(claudeDir, appData, processRunning)
+}
+
+func working(claudeDir, appData string, running func(pid int, procStart string) bool) []string {
+	dir := filepath.Join(claudeDir, "sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var titles []string
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := readShared(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var process processRecord
+		if json.Unmarshal(data, &process) != nil || process.Status != "busy" || process.Entrypoint != "claude-desktop" {
+			continue
+		}
+		if !hostedBy(appData, process.HostSessionID) || !running(process.PID, process.ProcStart) {
+			continue
+		}
+		title := strings.TrimSpace(process.Name)
+		if title == "" {
+			title = "Untitled session"
+		}
+		titles = append(titles, title)
+	}
+	sort.Strings(titles)
+	return titles
+}
+
+func hostedBy(appData, id string) bool {
+	if !continueIDPattern.MatchString(id) {
+		return false
+	}
+	root := filepath.Join(appData, recordsDirName)
+	accountDirs, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, accountDir := range accountDirs {
+		orgDirs, err := os.ReadDir(filepath.Join(root, accountDir.Name()))
+		if err != nil {
+			continue
+		}
+		for _, orgDir := range orgDirs {
+			if _, err := os.Stat(filepath.Join(root, accountDir.Name(), orgDir.Name(), id+".json")); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func readLeases(path string) (map[string]string, error) {
 	data, err := readShared(path)
 	if errors.Is(err, os.ErrNotExist) {

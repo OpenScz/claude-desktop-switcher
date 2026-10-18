@@ -257,6 +257,12 @@ func (s *trayState) handleAdd() {
 
 func (s *trayState) handleClaude() {
 	for range s.claude.ClickedCh {
+		if running, _ := s.claudeStateSnapshot(); running {
+			if working := s.workingSessions(); len(working) > 0 &&
+				!confirmStoppingWork("Close Claude Desktop?", "You can continue these sessions after Claude Desktop opens again.", "Close anyway?", working) {
+				continue
+			}
+		}
 		if !s.beginSwitch() {
 			s.setStatus("Wait for the current operation to finish")
 			continue
@@ -1419,6 +1425,10 @@ func (s *trayState) watchAccount(item *systray.MenuItem, name string, stop <-cha
 			continue
 		}
 		label := s.cachedProfileDisplayName(name)
+		if working := s.workingSessions(); len(working) > 0 &&
+			!confirmStoppingWork("Switch to "+label+"?", "Claude Desktop will close and reopen on "+label+". You can continue these sessions afterwards.", "Switch anyway?", working) {
+			continue
+		}
 		if !s.beginSwitch() {
 			s.setStatus("Wait for automatic account setup to finish")
 			continue

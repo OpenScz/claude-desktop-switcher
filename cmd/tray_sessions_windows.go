@@ -5,6 +5,9 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -21,6 +24,7 @@ const (
 	sessionTitleRunes        = 60
 	sessionWindowTimeout     = 30 * time.Second
 	sessionOpeningCardTime   = 1500 * time.Millisecond
+	maxListedWork            = 5
 )
 
 type sessionMenu struct {
@@ -217,11 +221,7 @@ func (s *trayState) continueSession(name string, session sessions.Session) {
 		return
 	}
 	if running {
-		current := ""
-		if active != "" {
-			current = s.cachedProfileDisplayName(active)
-		}
-		title, message := continueSessionPrompt(session, label, current, time.Now())
+		title, message := continueSessionPrompt(session, label, s.workingSessions(), time.Now())
 		if confirmed, err := nativeTrayConfirm(title, message); err != nil || !confirmed {
 			return
 		}
@@ -301,16 +301,46 @@ func sessionMenuEntries(list []sessions.Session, now time.Time) []sessionEntry {
 	return entries
 }
 
-func continueSessionPrompt(session sessions.Session, target, current string, now time.Time) (string, string) {
-	stops := "Work running now in Claude Desktop will stop."
-	if current != "" {
-		stops = "Work running now on " + current + " will stop."
-	}
+func continueSessionPrompt(session sessions.Session, target string, working []string, now time.Time) (string, string) {
 	message := plainText(session.Title) + "\n" +
 		plainText(session.Project) + " · last activity " + sessionTimeLabel(session.LastActivity, now) + "\n\n" +
-		"Claude Desktop will close and reopen on " + target + " (about half a minute), then this session opens.\n\n" +
-		stops
+		"Claude Desktop will close and reopen on " + target + " (about half a minute), then this session opens."
+	if len(working) > 0 {
+		message += "\n\n" + strings.TrimSuffix(stopWorkNotice(working), "\n")
+	}
 	return "Continue on " + target + "?", message
+}
+
+func (s *trayState) workingSessions() []string {
+	appData, err := s.platform.AppDataPath()
+	if err != nil {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return sessions.Working(filepath.Join(home, ".claude"), appData)
+}
+
+// Closing Claude Desktop stops every Claude Code session running a turn in it,
+// so actions that close it ask first while any is busy.
+func confirmStoppingWork(title, consequence, question string, working []string) bool {
+	confirmed, err := nativeTrayConfirm(title, stopWorkNotice(working)+"\n"+consequence+"\n\n"+question)
+	return err == nil && confirmed
+}
+
+func stopWorkNotice(working []string) string {
+	var notice strings.Builder
+	notice.WriteString("These Claude Code sessions are working right now and will stop:\n")
+	for index, title := range working {
+		if index == maxListedWork {
+			fmt.Fprintf(&notice, "• and %d more\n", len(working)-index)
+			break
+		}
+		notice.WriteString("• " + plainText(title) + "\n")
+	}
+	return notice.String()
 }
 
 func sessionTimeLabel(at, now time.Time) string {

@@ -111,21 +111,29 @@ func TestSessionTimeLabel(t *testing.T) {
 func TestContinueSessionPromptSaysWhatTheSwitchWillDo(t *testing.T) {
 	session := sessions.Session{ID: "local_1", Title: "Găsește materiale și calculatoare, scrie e-mailurile", Project: "Sample Project One", LastActivity: sessionAt(10, 18, 15, 13)}
 
-	title, message := continueSessionPrompt(session, "private@accounts.test", "office@accounts.test", sessionTestNow)
+	title, message := continueSessionPrompt(session, "private@accounts.test", nil, sessionTestNow)
 
 	if title != "Continue on private@accounts.test?" {
 		t.Fatalf("title = %q", title)
 	}
 	want := "Găsește materiale și calculatoare, scrie e-mailurile\n" +
 		"Sample Project One · last activity today 15:13\n\n" +
-		"Claude Desktop will close and reopen on private@accounts.test (about half a minute), then this session opens.\n\n" +
-		"Work running now on office@accounts.test will stop."
+		"Claude Desktop will close and reopen on private@accounts.test (about half a minute), then this session opens."
 	if message != want {
-		t.Fatalf("message = %q\nwant %q", message, want)
+		t.Fatalf("message = %q"+"\nwant %q", message, want)
 	}
 
-	_, unknown := continueSessionPrompt(session, "private@accounts.test", "", sessionTestNow)
-	if !strings.HasSuffix(unknown, "Work running now in Claude Desktop will stop.") {
-		t.Fatalf("message without a known open account = %q", unknown)
+	_, busy := continueSessionPrompt(session, "private@accounts.test", []string{"Planificare rapidă mesei"}, sessionTestNow)
+	if want := want + "\n\nThese Claude Code sessions are working right now and will stop:\n• Planificare rapidă mesei"; busy != want {
+		t.Fatalf("message with busy sessions = %q"+"\nwant %q", busy, want)
+	}
+}
+
+func TestStopWorkNoticeListsAtMostFiveSessions(t *testing.T) {
+	working := []string{"One", "Two\nlines", "Three", "Four", "Five", "Six", "Seven"}
+	want := "These Claude Code sessions are working right now and will stop:\n" +
+		"• One\n• Two lines\n• Three\n• Four\n• Five\n• and 2 more\n"
+	if got := stopWorkNotice(working); got != want {
+		t.Fatalf("notice = %q"+"\nwant %q", got, want)
 	}
 }
