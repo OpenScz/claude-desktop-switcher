@@ -70,6 +70,19 @@ func acquireOperationLockWithWait(name string, wait time.Duration) (*operationLo
 	}
 }
 
+func operationLockHeld(name string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".claude-swap", name+".lock"))
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	return err != nil || processAlive(pid)
+}
+
 func (l *operationLock) Release() {
 	if l == nil {
 		return

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -798,6 +800,44 @@ func TestOperationLockReleaseDoesNotRemoveReplacement(t *testing.T) {
 
 	if _, err := os.Stat(replacement.path); err != nil {
 		t.Fatalf("replacement lock was removed: %v", err)
+	}
+}
+
+func TestOperationLockHeldReportsOnlyALiveOwner(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	if operationLockHeld("test-operation") {
+		t.Fatal("missing lock was reported as held")
+	}
+	lock, err := acquireOperationLock("test-operation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !operationLockHeld("test-operation") {
+		t.Fatal("lock held by this process was not reported")
+	}
+	lock.Release()
+	if operationLockHeld("test-operation") {
+		t.Fatal("released lock was reported as held")
+	}
+
+	exited := exec.Command(os.Args[0], "-test.run=^$")
+	if err := exited.Run(); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(home, ".claude-swap", "test-operation.lock")
+	if err := os.WriteFile(stale, []byte(strconv.Itoa(exited.Process.Pid)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if operationLockHeld("test-operation") {
+		t.Fatal("lock left by an exited process was reported as held")
+	}
+	if err := os.WriteFile(stale, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !operationLockHeld("test-operation") {
+		t.Fatal("lock whose owner is still being written was not reported as held")
 	}
 }
 

@@ -454,10 +454,21 @@ func (s *trayState) autoRefresh() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		if s.workflowSnapshot() == nil && !s.switchingSnapshot() {
-			s.loadAccounts()
-		}
+		s.refreshAccounts()
 	}
+}
+
+// Reading the profiles while an operation renames their folders makes
+// Windows refuse the rename, so background refreshes wait for it to finish.
+func (s *trayState) refreshAccounts() {
+	if s.backgroundReadsPaused() {
+		return
+	}
+	s.loadAccounts()
+}
+
+func (s *trayState) backgroundReadsPaused() bool {
+	return s.workflowSnapshot() != nil || s.switchingSnapshot() || operationLockHeld("operation")
 }
 
 func (s *trayState) monitorClaudeClose() {
@@ -506,8 +517,8 @@ func (s *trayState) monitorClaudeClose() {
 		}
 		if running != wasRunning {
 			s.setClaudeRunning(running)
-			go s.loadAccounts()
 			if running {
+				go s.refreshAccounts()
 				go s.detectInitialAccountAfterLaunch()
 			}
 		}
@@ -520,6 +531,7 @@ func (s *trayState) monitorClaudeClose() {
 			} else {
 				s.saveClosedSession(p)
 			}
+			go s.refreshAccounts()
 		}
 		wasRunning = running
 	}
@@ -1067,6 +1079,13 @@ func (s *trayState) discoverProfileEmail(name string) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
+		if s.backgroundReadsPaused() {
+			if time.Now().After(deadline) {
+				return
+			}
+			<-ticker.C
+			continue
+		}
 		profiles, err := s.store.List()
 		if err != nil {
 			return
