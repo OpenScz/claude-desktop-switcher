@@ -18,6 +18,7 @@ import (
 
 	"github.com/TinoA/claude-desktop-switcher/internal/platform"
 	"github.com/TinoA/claude-desktop-switcher/internal/profile"
+	"github.com/TinoA/claude-desktop-switcher/internal/sessions"
 	"github.com/getlantern/systray"
 	"github.com/spf13/cobra"
 	"golang.org/x/sys/windows"
@@ -51,6 +52,7 @@ type trayState struct {
 	platform           platform.Platform
 	trayLock           *operationLock
 	root               *systray.MenuItem
+	continueMenu       *systray.MenuItem
 	claude             *systray.MenuItem
 	add                *systray.MenuItem
 	delete             *systray.MenuItem
@@ -65,6 +67,9 @@ type trayState struct {
 	itemStops          map[string]chan struct{}
 	deleteItemStops    map[string]chan struct{}
 	profileLabels      map[string]string
+	sessionMenus       map[string]*sessionMenu
+	sessionReader      *sessions.Reader
+	sessionReadErr     string
 	workflow           *addWorkflow
 	claudeInstalled    bool
 	claudeRunning      bool
@@ -112,7 +117,7 @@ func runTray() (resultErr error) {
 		return err
 	}
 	logStartup("Profile store ready")
-	state := &trayState{store: store, platform: platform.Current(), trayLock: lock, items: make(map[string]*systray.MenuItem), deleteItems: make(map[string]*systray.MenuItem), itemStops: make(map[string]chan struct{}), deleteItemStops: make(map[string]chan struct{}), profileLabels: make(map[string]string), emailDiscovering: make(map[string]bool), initializing: true, activityLog: activityLog, activityLogErr: activityLogErr}
+	state := &trayState{store: store, platform: platform.Current(), trayLock: lock, items: make(map[string]*systray.MenuItem), deleteItems: make(map[string]*systray.MenuItem), itemStops: make(map[string]chan struct{}), deleteItemStops: make(map[string]chan struct{}), profileLabels: make(map[string]string), sessionMenus: make(map[string]*sessionMenu), sessionReader: &sessions.Reader{}, emailDiscovering: make(map[string]bool), initializing: true, activityLog: activityLog, activityLogErr: activityLogErr}
 	state.setStatus("Tray started; version=" + displayVersion(Version))
 	systray.Run(func() { state.ready() }, func() {
 		state.setStatus("Tray stopped")
@@ -131,6 +136,7 @@ func (s *trayState) ready() {
 	systray.SetTooltip(ProductName + " - Claude Desktop account switcher")
 
 	s.root = systray.AddMenuItem("Accounts", "Switch account")
+	s.continueMenu = systray.AddMenuItem("Continue a session", "Open a recent Claude Code session on its account")
 	s.add = systray.AddMenuItem("Add account...", "Open Claude to sign in with another account")
 	s.delete = systray.AddMenuItem("Delete account...", "Delete a local Switcher copy")
 	systray.AddSeparator()
@@ -672,10 +678,10 @@ func (s *trayState) monitorUpdates() {
 }
 
 func openLatestRelease() error {
-	return openGitHubPage(githubReleasePage)
+	return openURL(githubReleasePage)
 }
 
-func openGitHubPage(url string) error {
+func openURL(url string) error {
 	verb, err := windows.UTF16PtrFromString("open")
 	if err != nil {
 		return err
@@ -689,7 +695,7 @@ func openGitHubPage(url string) error {
 
 func (s *trayState) handleVersion() {
 	for range s.version.ClickedCh {
-		if err := openGitHubPage(githubRepoPage); err != nil {
+		if err := openURL(githubRepoPage); err != nil {
 			s.setStatus("Could not open GitHub repository: " + err.Error())
 			trayWarning("Could not open GitHub repository", err.Error())
 		}
@@ -1215,6 +1221,7 @@ func (s *trayState) loadAccounts() {
 			}
 		}
 	}
+	recent, recentRead := s.readRecentSessions(profiles, active)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1315,6 +1322,7 @@ func (s *trayState) loadAccounts() {
 			delete(s.profileLabels, name)
 		}
 	}
+	s.updateSessionMenusLocked(profiles, active, running, installed && !busy, recent, recentRead)
 	if !installed {
 		s.setStatus("Claude Desktop is not installed or was not detected")
 	}
@@ -1626,6 +1634,7 @@ func (s *trayState) removeDeletedAccount(name string) {
 		stopMenuWatcher(s.deleteItemStops, name)
 		delete(s.deleteItems, name)
 	}
+	s.retireSessionMenuLocked(name)
 	delete(s.profileLabels, name)
 }
 
@@ -1698,6 +1707,7 @@ func (s *trayState) beginSwitch() bool {
 	for _, item := range s.items {
 		item.Disable()
 	}
+	s.disableSessionSlotsLocked()
 	s.add.Disable()
 	s.delete.Disable()
 	s.claude.Disable()
@@ -1774,6 +1784,7 @@ func (s *trayState) disableAccounts(disabled bool) {
 	for _, item := range s.items {
 		item.Disable()
 	}
+	s.disableSessionSlotsLocked()
 }
 
 func (s *trayState) setStatus(value string) {
