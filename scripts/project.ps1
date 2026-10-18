@@ -110,7 +110,7 @@ function Invoke-Validation {
         Invoke-Checked -Command $go -Arguments $testArguments
 
         if (-not $SkipLint) {
-            Invoke-Checked -Command $go -Arguments @("run", "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0", "run")
+            Invoke-Checked -Command $go -Arguments @("run", "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0", "run")
         }
         if (-not $SkipSecurity) {
             Invoke-Checked -Command $go -Arguments @("run", "golang.org/x/vuln/cmd/govulncheck@v1.6.0", "./...")

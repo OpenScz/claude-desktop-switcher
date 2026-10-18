@@ -1,6 +1,6 @@
 module github.com/TinoA/claude-desktop-switcher
 
-go 1.25.12
+go 1.27.2
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
