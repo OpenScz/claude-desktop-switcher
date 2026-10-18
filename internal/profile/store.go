@@ -93,6 +93,9 @@ func newStore(base string) (*Store, error) {
 }
 
 func (s *Store) Exists(name string) bool {
+	if !validProfileName(name) {
+		return false
+	}
 	info, err := os.Stat(s.profileDir(name))
 	return err == nil && info.IsDir()
 }
@@ -308,7 +311,8 @@ func (s *Store) RestoreAt(name, appDataPath, live string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(rollbackRoot)
+	recovery := pathRollback{directory: rollbackRoot}
+	defer recovery.cleanup()
 	backupCookies := filepath.Join(rollbackRoot, "cookies")
 	backupData := filepath.Join(rollbackRoot, "data")
 	if err := os.MkdirAll(backupCookies, dirPerm); err != nil {
@@ -318,83 +322,43 @@ func (s *Store) RestoreAt(name, appDataPath, live string) error {
 		return err
 	}
 
-	type movedPath struct {
-		live    string
-		backup  string
-		existed bool
-	}
-	var moved []movedPath
-	moveToRollback := func(livePath, backupPath string) error {
-		if _, err := os.Stat(livePath); errors.Is(err, os.ErrNotExist) {
-			moved = append(moved, movedPath{live: livePath, backup: backupPath})
-			return nil
-		} else if err != nil {
-			return err
-		}
-		if err := os.Rename(livePath, backupPath); err != nil {
-			return err
-		}
-		moved = append(moved, movedPath{live: livePath, backup: backupPath, existed: true})
-		return nil
-	}
-	rollback := func() {
-		for index := len(moved) - 1; index >= 0; index-- {
-			entry := moved[index]
-			_ = os.RemoveAll(entry.live)
-			if !entry.existed {
-				continue
-			}
-			_ = os.MkdirAll(filepath.Dir(entry.live), dirPerm)
-			_ = os.Rename(entry.backup, entry.live)
-		}
-	}
-
 	for _, sidecar := range []string{cookiesJournalFile, cookiesWALFile, cookiesSHMFile} {
-		if err := moveToRollback(filepath.Join(filepath.Dir(live), sidecar), filepath.Join(backupCookies, sidecar)); err != nil {
-			rollback()
-			return fmt.Errorf("retain Cookies sidecar: %w", err)
+		if err := recovery.move(filepath.Join(filepath.Dir(live), sidecar), filepath.Join(backupCookies, sidecar)); err != nil {
+			return recovery.restore(fmt.Errorf("retain Cookies sidecar: %w", err))
 		}
 	}
-	if err := moveToRollback(live, filepath.Join(backupCookies, cookiesFile)); err != nil {
-		rollback()
-		return fmt.Errorf("retain live cookies: %w", err)
+	if err := recovery.move(live, filepath.Join(backupCookies, cookiesFile)); err != nil {
+		return recovery.restore(fmt.Errorf("retain live cookies: %w", err))
 	}
 	for _, directory := range stateDirectories {
-		if err := moveToRollback(filepath.Join(appDataPath, directory.rel), filepath.Join(backupData, directory.rollback)); err != nil {
-			rollback()
-			return fmt.Errorf("retain live %s: %w", directory.label, err)
+		if err := recovery.move(filepath.Join(appDataPath, directory.rel), filepath.Join(backupData, directory.rollback)); err != nil {
+			return recovery.restore(fmt.Errorf("retain live %s: %w", directory.label, err))
 		}
 	}
 	for _, name := range []string{claudeConfigFile, coworkOpsFile} {
-		if err := moveToRollback(filepath.Join(appDataPath, name), filepath.Join(backupData, name)); err != nil {
-			rollback()
-			return fmt.Errorf("retain live account configuration: %w", err)
+		if err := recovery.move(filepath.Join(appDataPath, name), filepath.Join(backupData, name)); err != nil {
+			return recovery.restore(fmt.Errorf("retain live account configuration: %w", err))
 		}
 	}
 
 	if err := os.Rename(stageCookies, live); err != nil {
-		rollback()
-		return fmt.Errorf("commit live cookies: %w", err)
+		return recovery.restore(fmt.Errorf("commit live cookies: %w", err))
 	}
 	if err := os.Chmod(live, filePerm); err != nil {
-		rollback()
-		return err
+		return recovery.restore(err)
 	}
 	for _, directory := range stateDirectories {
 		stageDirectory := filepath.Join(stage, directory.rel)
 		liveDirectory := filepath.Join(appDataPath, directory.rel)
 		if _, err := os.Stat(stageDirectory); err == nil {
 			if err := os.MkdirAll(filepath.Dir(liveDirectory), dirPerm); err != nil {
-				rollback()
-				return err
+				return recovery.restore(err)
 			}
 			if err := os.Rename(stageDirectory, liveDirectory); err != nil {
-				rollback()
-				return fmt.Errorf("commit %s: %w", directory.label, err)
+				return recovery.restore(fmt.Errorf("commit %s: %w", directory.label, err))
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
-			rollback()
-			return err
+			return recovery.restore(err)
 		}
 	}
 	for _, name := range []string{claudeConfigFile, coworkOpsFile} {
@@ -402,23 +366,19 @@ func (s *Store) RestoreAt(name, appDataPath, live string) error {
 		liveFile := filepath.Join(appDataPath, name)
 		if _, err := os.Stat(stageFile); err == nil {
 			if err := os.Rename(stageFile, liveFile); err != nil {
-				rollback()
-				return fmt.Errorf("commit account configuration: %w", err)
+				return recovery.restore(fmt.Errorf("commit account configuration: %w", err))
 			}
 			if err := os.Chmod(liveFile, filePerm); err != nil {
-				rollback()
-				return err
+				return recovery.restore(err)
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
-			rollback()
-			return err
+			return recovery.restore(err)
 		}
 	}
 	previousMeta, metaErr := s.loadMeta(name)
 	previousCurrent, currentErr := s.Current()
 	if err := s.setLastUsed(name); err != nil {
-		rollback()
-		return err
+		return recovery.restore(err)
 	}
 	if err := s.SetCurrent(name); err != nil {
 		if metaErr == nil {
@@ -429,9 +389,9 @@ func (s *Store) RestoreAt(name, appDataPath, live string) error {
 		} else {
 			_ = os.RemoveAll(filepath.Join(s.baseDir, currentFileName))
 		}
-		rollback()
-		return err
+		return recovery.restore(err)
 	}
+	recovery.completed = true
 	return nil
 }
 
@@ -465,7 +425,7 @@ func (s *Store) List() ([]Meta, error) {
 	}
 	profiles := make([]Meta, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+		if !entry.IsDir() || !validProfileName(entry.Name()) {
 			continue
 		}
 		meta, err := s.loadMeta(entry.Name())
@@ -912,6 +872,9 @@ func (s *Store) recoverProfiles() error {
 }
 
 func (s *Store) ProfileCookiesPath(name string) string {
+	if !validProfileName(name) {
+		return ""
+	}
 	return filepath.Join(s.profileDir(name), cookiesFile)
 }
 
@@ -936,15 +899,26 @@ func (s *Store) ensureDirectories() error {
 }
 
 func (s *Store) loadMeta(name string) (Meta, error) {
+	if !validProfileName(name) {
+		return Meta{}, fmt.Errorf("invalid profile name %q", name)
+	}
 	data, err := os.ReadFile(filepath.Join(s.profileDir(name), metaFile))
 	if err != nil {
 		return Meta{}, err
 	}
 	var meta Meta
-	return meta, json.Unmarshal(data, &meta)
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return Meta{}, err
+	}
+	meta.Name = name
+	return meta, nil
 }
 
 func (s *Store) saveMeta(name string, meta Meta) error {
+	if !validProfileName(name) {
+		return fmt.Errorf("invalid profile name %q", name)
+	}
+	meta.Name = name
 	return writeJSONAtomic(filepath.Join(s.profileDir(name), metaFile), meta)
 }
 

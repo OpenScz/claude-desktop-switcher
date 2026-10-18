@@ -563,6 +563,19 @@ func newPendingAddWorkflow(store addStore, p platform.Platform) (*addWorkflow, e
 }
 
 func (w *addWorkflow) recover(cause error) error {
+	// Cancel resumability before recovery can leave partially restored state.
+	if err := w.removePending(); err != nil {
+		w.setStage(addCancelled)
+		w.finishLock()
+		w.record("recovery-failed", err.Error())
+		return errors.Join(cause, profile.ErrRecoveryRequired, fmt.Errorf("remove pending login before recovery: %w", err))
+	}
+	if errors.Is(cause, profile.ErrRecoveryRequired) {
+		w.setStage(addCancelled)
+		w.finishLock()
+		w.record("recovery-failed", cause.Error())
+		return cause
+	}
 	running, stateErr := w.platform.IsRunning()
 	if stateErr != nil {
 		w.setStage(addCancelled)
@@ -584,19 +597,18 @@ func (w *addWorkflow) recover(cause error) error {
 	} else {
 		restoreErr = w.store.RestoreAt(w.previous, w.appData, w.live)
 	}
+	if restoreErr != nil {
+		w.setStage(addCancelled)
+		w.finishLock()
+		w.record("recovery-failed", restoreErr.Error())
+		return errors.Join(cause, fmt.Errorf("restore previous account state: %w", restoreErr))
+	}
 	launchErr := w.platform.LaunchApp()
 	w.mu.Lock()
 	w.stage = addCancelled
 	w.mu.Unlock()
 	w.finishLock()
-	_ = w.removePending()
 	w.record("recovered", cause.Error())
-	if restoreErr != nil && w.previous == "" {
-		return fmt.Errorf("%w; clear incomplete first account: %v", cause, restoreErr)
-	}
-	if restoreErr != nil {
-		return fmt.Errorf("%w; restore previous profile: %v", cause, restoreErr)
-	}
 	if launchErr != nil {
 		return fmt.Errorf("%w; restored profile but Claude could not restart: %v", cause, launchErr)
 	}

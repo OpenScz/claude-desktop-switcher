@@ -501,6 +501,9 @@ func validateUniqueBackupAccounts(profilesPath string) error {
 		if json.Unmarshal(data, &meta) != nil {
 			continue
 		}
+		if meta.Name != "" && meta.Name != entry.Name() {
+			return fmt.Errorf("backup profile %q contains mismatched metadata name %q", entry.Name(), meta.Name)
+		}
 		if existing, ok := seenSession[meta.SessionDigest]; meta.SessionDigest != "" && ok {
 			return fmt.Errorf("backup contains the same Claude account in profiles %q and %q", existing, entry.Name())
 		}
@@ -554,7 +557,7 @@ func safeBackupName(name string) (string, error) {
 }
 
 func validProfileName(name string) bool {
-	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && !strings.ContainsAny(name, `/\\`) && !strings.HasPrefix(name, ".")
+	return filepath.IsLocal(name) && filepath.Base(name) == name && !strings.ContainsAny(name, "/\\:\x00") && !strings.HasPrefix(name, ".") && !strings.HasSuffix(name, ".") && !strings.HasSuffix(name, " ")
 }
 
 func (s *Store) recoverImportedProfiles() error {

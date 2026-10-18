@@ -191,50 +191,97 @@ func replaceAccountFiles(appDataPath string, state accountState) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(rollback)
-
-	type movedFile struct {
-		live    string
-		backup  string
-		existed bool
-	}
-	var moved []movedFile
-	restore := func() {
-		for index := len(moved) - 1; index >= 0; index-- {
-			entry := moved[index]
-			_ = os.Remove(entry.live)
-			if entry.existed {
-				_ = os.Rename(entry.backup, entry.live)
-			}
-		}
-	}
+	recovery := pathRollback{directory: rollback}
+	defer recovery.cleanup()
 	for _, name := range []string{claudeConfigFile, coworkOpsFile} {
 		live := filepath.Join(appDataPath, name)
 		backup := filepath.Join(rollback, name)
-		entry := movedFile{live: live, backup: backup}
-		if _, err := os.Stat(live); err == nil {
-			if err := os.Rename(live, backup); err != nil {
-				restore()
-				return err
-			}
-			entry.existed = true
-		} else if !errors.Is(err, os.ErrNotExist) {
-			restore()
-			return err
+		if err := recovery.move(live, backup); err != nil {
+			return recovery.restore(err)
 		}
-		moved = append(moved, entry)
 		staged := filepath.Join(stage, name)
 		if _, err := os.Stat(staged); err == nil {
 			if err := os.Rename(staged, live); err != nil {
-				restore()
-				return err
+				return recovery.restore(err)
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
-			restore()
-			return err
+			return recovery.restore(err)
 		}
 	}
+	recovery.completed = true
 	return nil
+}
+
+var ErrRecoveryRequired = errors.New("manual recovery required")
+
+type movedPath struct {
+	live     string
+	backup   string
+	existed  bool
+	restored bool
+}
+
+type pathRollback struct {
+	directory string
+	moved     []movedPath
+	completed bool
+}
+
+func (r *pathRollback) move(live, backup string) error {
+	entry := movedPath{live: live, backup: backup}
+	if _, err := os.Stat(live); err == nil {
+		if err := os.Rename(live, backup); err != nil {
+			return err
+		}
+		entry.existed = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	r.moved = append(r.moved, entry)
+	return nil
+}
+
+func (r *pathRollback) restore(cause error) error {
+	var failures []error
+	for index := len(r.moved) - 1; index >= 0; index-- {
+		entry := &r.moved[index]
+		if entry.restored {
+			continue
+		}
+		// Check the retained original before removing its replacement.
+		if entry.existed {
+			if _, err := os.Stat(entry.backup); err != nil {
+				failures = append(failures, fmt.Errorf("read retained state %s: %w", entry.backup, err))
+				continue
+			}
+		}
+		if err := os.RemoveAll(entry.live); err != nil {
+			failures = append(failures, fmt.Errorf("remove replacement %s: %w", entry.live, err))
+			continue
+		}
+		if entry.existed {
+			if err := os.MkdirAll(filepath.Dir(entry.live), dirPerm); err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if err := os.Rename(entry.backup, entry.live); err != nil {
+				failures = append(failures, fmt.Errorf("restore original %s: %w", entry.live, err))
+				continue
+			}
+		}
+		entry.restored = true
+	}
+	if len(failures) > 0 {
+		return errors.Join(cause, ErrRecoveryRequired, fmt.Errorf("original state retained in %s; keep Claude closed until recovery: %w", r.directory, errors.Join(failures...)))
+	}
+	r.completed = true
+	return cause
+}
+
+func (r *pathRollback) cleanup() {
+	if r.completed || len(r.moved) == 0 {
+		_ = os.RemoveAll(r.directory)
+	}
 }
 
 func readJSONObject(path string) (map[string]json.RawMessage, bool, error) {

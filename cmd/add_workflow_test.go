@@ -143,6 +143,54 @@ func workflowStage(w *addWorkflow) addStage {
 	return w.stage
 }
 
+func TestAddRecoveryKeepsClaudeClosedWhenOriginalsNeedRecovery(t *testing.T) {
+	for _, initialFailure := range []bool{false, true} {
+		t.Setenv("USERPROFILE", t.TempDir())
+		t.Setenv("HOME", t.TempDir())
+		if err := writePendingAdd(pendingAdd{Name: "work", Previous: "personal"}); err != nil {
+			t.Fatal(err)
+		}
+		store := &workflowStoreFake{current: "personal", restoreErr: profile.ErrRecoveryRequired}
+		platform := &workflowPlatformFake{}
+		w := newWorkflowTest(t, store, platform)
+		w.removePending = clearPendingAdd
+		w.previous = "personal"
+		cause := errors.New("login failed")
+		if initialFailure {
+			cause = profile.ErrRecoveryRequired
+		}
+		err := w.recover(cause)
+		if !errors.Is(err, profile.ErrRecoveryRequired) || workflowStage(w) != addCancelled {
+			t.Fatalf("incomplete recovery = %v/%s", err, workflowStage(w))
+		}
+		if containsEvent(platform.events, "launch") {
+			t.Fatalf("unsafe launch after incomplete recovery: %v", platform.events)
+		}
+		if initialFailure && len(store.events) != 0 {
+			t.Fatalf("mutated state requiring manual recovery: %v", store.events)
+		}
+		if _, err := loadPendingAdd(); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("tray restart could resume an incomplete recovery: %v", err)
+		}
+	}
+}
+
+func TestAddRecoveryStopsIfPendingLoginCannotBeCancelled(t *testing.T) {
+	store := &workflowStoreFake{current: "personal"}
+	platform := &workflowPlatformFake{}
+	w := newWorkflowTest(t, store, platform)
+	w.previous = "personal"
+	removeErr := errors.New("pending login is locked")
+	w.removePending = func() error { return removeErr }
+	err := w.recover(errors.New("login failed"))
+	if !errors.Is(err, removeErr) || !errors.Is(err, profile.ErrRecoveryRequired) {
+		t.Fatalf("pending cleanup error was lost: %v", err)
+	}
+	if len(store.events) != 0 || len(platform.events) != 0 {
+		t.Fatalf("mutated state despite resumable pending login: %v/%v", store.events, platform.events)
+	}
+}
+
 func TestAddWorkflowBeginCompleteAndRelaunchesClaude(t *testing.T) {
 	store := &workflowStoreFake{current: "personal"}
 	platform := &workflowPlatformFake{running: true}
