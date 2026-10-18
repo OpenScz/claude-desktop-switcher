@@ -39,10 +39,6 @@ const (
 	nativeESAutoHScroll   = 0x00000080
 	nativeSMCXScreen      = 0
 	nativeSMCYScreen      = 1
-	nativeSMCXVirtual     = 78
-	nativeSMCYVirtual     = 79
-	nativeSMXVirtual      = 76
-	nativeSMYVirtual      = 77
 	nativeSWShow          = 5
 	nativeSWHide          = 0
 	nativeLayeredAlpha    = 0x00000002
@@ -119,6 +115,20 @@ var (
 	nativeGetOpenFile       = nativeCommDlg.NewProc("GetOpenFileNameW")
 	nativeGetSaveFile       = nativeCommDlg.NewProc("GetSaveFileNameW")
 	nativeCommDlgError      = nativeCommDlg.NewProc("CommDlgExtendedError")
+)
+
+const (
+	nativeSWShowNoActivate          = 4
+	nativeWSExNoActivate            = 0x08000000
+	nativeWSExTransparent           = 0x00000020
+	nativeDWMWindowCornerPreference = 33
+	nativeDWMRoundCorners           = 2
+)
+
+var (
+	nativeCreateCompatibleBitmap = nativeGDI32.NewProc("CreateCompatibleBitmap")
+	nativeGetClientRect          = nativeUser32.NewProc("GetClientRect")
+	nativeDwmSetAttribute        = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
 )
 
 func setCurrentProcessAppUserModelID() error {
@@ -543,19 +553,24 @@ func runNativeOverlay(overlay *switchOverlay, message string, success bool, icon
 		close(overlay.done)
 		return
 	}
-	width, _, _ := nativeGetMetrics.Call(nativeSMCXVirtual)
-	height, _, _ := nativeGetMetrics.Call(nativeSMCYVirtual)
-	left, _, _ := nativeGetMetrics.Call(nativeSMXVirtual)
-	top, _, _ := nativeGetMetrics.Call(nativeSMYVirtual)
 	hInstance, _, _ := nativeGetModule.Call(0)
 	state := &nativeOverlayState{message: message, success: success}
 	state.icon = nativeExtractIcon(iconPath)
+	width, height := 720, 230
+	if state.icon != 0 && !success {
+		height = 300
+	}
+	screenWidth, _, _ := nativeGetMetrics.Call(nativeSMCXScreen)
+	screenHeight, _, _ := nativeGetMetrics.Call(nativeSMCYScreen)
+	// A small card that never takes focus or clicks replaces the dimmed full
+	// screen, which flickered and covered the taskbar during every switch.
 	hwnd, _, _ := nativeCreateWindow.Call(
-		nativeWSExLayered|nativeWSExTopmost|nativeWSExToolWindow,
+		nativeWSExLayered|nativeWSExTopmost|nativeWSExToolWindow|nativeWSExNoActivate|nativeWSExTransparent,
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr("WindowsClaudeSwapOverlay"))),
 		uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(ProductName))),
-		nativeWSPopup|nativeWSVisible,
-		left, top, width, height, 0, 0, hInstance, 0,
+		nativeWSPopup,
+		uintptr((int(screenWidth)-width)/2), uintptr((int(screenHeight)-height)/2),
+		uintptr(width), uintptr(height), 0, 0, hInstance, 0,
 	)
 	if hwnd == 0 {
 		if state.icon != 0 {
@@ -569,11 +584,14 @@ func runNativeOverlay(overlay *switchOverlay, message string, success bool, icon
 	nativeOverlayStatesMu.Lock()
 	nativeOverlayStates[hwnd] = state
 	nativeOverlayStatesMu.Unlock()
-	nativeSetLayered.Call(hwnd, 0, 180, nativeLayeredAlpha)
+	nativeSetLayered.Call(hwnd, 0, 255, nativeLayeredAlpha)
+	if nativeDwmSetAttribute.Find() == nil {
+		corner := uint32(nativeDWMRoundCorners)
+		nativeDwmSetAttribute.Call(hwnd, nativeDWMWindowCornerPreference, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
+	}
 	nativeSetTimer.Call(hwnd, nativeTimerID, 125, 0)
-	nativeShowWindow.Call(hwnd, nativeSWShow)
+	nativeShowWindow.Call(hwnd, nativeSWShowNoActivate)
 	nativeUpdateWindow.Call(hwnd)
-	nativeSetForeground.Call(hwnd)
 	overlay.ready <- nil
 
 	var messageLoop nativeMSG
@@ -622,26 +640,9 @@ func nativeOverlayWindowProc(hwnd, message, wParam, lParam uintptr) uintptr {
 		var paint nativePaintStruct
 		hdc, _, _ := nativeBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
 		if hdc != 0 {
-			brush, _, _ := nativeCreateBrush.Call(0x51565A)
-			nativeFillRect.Call(hdc, uintptr(unsafe.Pointer(&paint.paint)), brush)
-			nativeDeleteObject.Call(brush)
-			nativeSetBkMode.Call(hdc, nativeTransparent)
-			nativeSetTextColor.Call(hdc, 0x00FFFFFF)
-			if state.icon != 0 && !state.success {
-				x := (paint.paint.right - paint.paint.left - 96) / 2
-				nativeDrawIcon.Call(hdc, uintptr(x), 100, state.icon, 96, 96, 0, 0, nativeDIIcon)
-				nativeDrawCenteredText(hdc, []string{"◌", "◍", "◎", "◉"}[state.frame%4], paint.paint, 205)
-			} else {
-				glyph := "✓"
-				if !state.success {
-					glyph = []string{"◌", "◍", "◎", "◉"}[state.frame%4]
-				} else {
-					nativeSetTextColor.Call(hdc, 0x0000FF00)
-				}
-				nativeDrawCenteredText(hdc, glyph, paint.paint, 100)
-				nativeSetTextColor.Call(hdc, 0x00FFFFFF)
-			}
-			nativeDrawCenteredText(hdc, state.message, paint.paint, 260)
+			var bounds nativeRect
+			nativeGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&bounds)))
+			nativePaintOverlay(hdc, bounds, state)
 			nativeEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&paint)))
 		}
 	case nativeWMClose:
@@ -655,6 +656,48 @@ func nativeOverlayWindowProc(hwnd, message, wParam, lParam uintptr) uintptr {
 	}
 	result, _, _ := nativeDefWindowProc.Call(hwnd, message, wParam, lParam)
 	return result
+}
+
+// The card is drawn in memory and copied in one step, so the spinner never
+// shows a half-drawn frame.
+func nativePaintOverlay(hdc uintptr, bounds nativeRect, state *nativeOverlayState) {
+	width := uintptr(bounds.right - bounds.left)
+	height := uintptr(bounds.bottom - bounds.top)
+	memory, _, _ := nativeCreateCompatibleDC.Call(hdc)
+	if memory == 0 {
+		return
+	}
+	defer nativeDeleteDC.Call(memory)
+	bitmap, _, _ := nativeCreateCompatibleBitmap.Call(hdc, width, height)
+	if bitmap == 0 {
+		return
+	}
+	defer nativeDeleteObject.Call(bitmap)
+	previous, _, _ := nativeSelectObject.Call(memory, bitmap)
+	defer nativeSelectObject.Call(memory, previous)
+
+	brush, _, _ := nativeCreateBrush.Call(0x51565A)
+	nativeFillRect.Call(memory, uintptr(unsafe.Pointer(&bounds)), brush)
+	nativeDeleteObject.Call(brush)
+	nativeSetBkMode.Call(memory, nativeTransparent)
+	nativeSetTextColor.Call(memory, 0x00FFFFFF)
+	spinner := []string{"◌", "◍", "◎", "◉"}[state.frame%4]
+	if state.icon != 0 && !state.success {
+		x := (bounds.right - bounds.left - 96) / 2
+		nativeDrawIcon.Call(memory, uintptr(x), 40, state.icon, 96, 96, 0, 0, nativeDIIcon)
+		nativeDrawCenteredText(memory, spinner, bounds, 172)
+		nativeDrawCenteredText(memory, state.message, bounds, 240)
+	} else {
+		glyph := spinner
+		if state.success {
+			glyph = "✓"
+			nativeSetTextColor.Call(memory, 0x0000FF00)
+		}
+		nativeDrawCenteredText(memory, glyph, bounds, 84)
+		nativeSetTextColor.Call(memory, 0x00FFFFFF)
+		nativeDrawCenteredText(memory, state.message, bounds, 160)
+	}
+	nativeBitBlt.Call(hdc, 0, 0, width, height, memory, 0, 0, nativeSRCCopy)
 }
 
 func nativeDrawCenteredText(hdc uintptr, text string, bounds nativeRect, centerY int32) {
