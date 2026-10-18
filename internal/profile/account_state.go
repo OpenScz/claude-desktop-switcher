@@ -136,6 +136,10 @@ func accountIdentifierHash(value json.RawMessage) string {
 	if len(value) == 0 || json.Unmarshal(value, &identifier) != nil {
 		return ""
 	}
+	return AccountUUIDHash(identifier)
+}
+
+func AccountUUIDHash(identifier string) string {
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
 	if identifier == "" || len(identifier) > 256 {
 		return ""
