@@ -341,7 +341,7 @@ func (s *Store) RestoreAt(name, appDataPath, live string) error {
 		}
 	}
 
-	if err := os.Rename(stageCookies, live); err != nil {
+	if err := renamePath(stageCookies, live); err != nil {
 		return recovery.restore(fmt.Errorf("commit live cookies: %w", err))
 	}
 	if err := os.Chmod(live, filePerm); err != nil {
@@ -354,7 +354,7 @@ func (s *Store) RestoreAt(name, appDataPath, live string) error {
 			if err := os.MkdirAll(filepath.Dir(liveDirectory), dirPerm); err != nil {
 				return recovery.restore(err)
 			}
-			if err := os.Rename(stageDirectory, liveDirectory); err != nil {
+			if err := renamePath(stageDirectory, liveDirectory); err != nil {
 				return recovery.restore(fmt.Errorf("commit %s: %w", directory.label, err))
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -365,7 +365,7 @@ func (s *Store) RestoreAt(name, appDataPath, live string) error {
 		stageFile := filepath.Join(stage, name)
 		liveFile := filepath.Join(appDataPath, name)
 		if _, err := os.Stat(stageFile); err == nil {
-			if err := os.Rename(stageFile, liveFile); err != nil {
+			if err := renamePath(stageFile, liveFile); err != nil {
 				return recovery.restore(fmt.Errorf("commit account configuration: %w", err))
 			}
 			if err := os.Chmod(liveFile, filePerm); err != nil {
@@ -739,11 +739,11 @@ func (s *Store) Delete(name string) error {
 	if err := os.RemoveAll(deletedPath); err != nil {
 		return fmt.Errorf("clean previous account deletion: %w", err)
 	}
-	if err := os.Rename(profilePath, deletedPath); err != nil {
+	if err := renamePath(profilePath, deletedPath); err != nil {
 		return fmt.Errorf("prepare account deletion: %w", err)
 	}
 	rollback := func() {
-		_ = os.Rename(deletedPath, profilePath)
+		_ = renamePath(deletedPath, profilePath)
 	}
 	if current == name {
 		if err := os.Remove(filepath.Join(s.baseDir, currentFileName)); err != nil {
@@ -805,19 +805,19 @@ func (s *Store) commitProfile(name, stage string) error {
 	_ = os.RemoveAll(backup)
 	hadBackup := false
 	if _, err := os.Stat(final); err == nil {
-		if err := os.Rename(final, backup); err != nil {
+		if err := renamePath(final, backup); err != nil {
 			return err
 		}
 		hadBackup = true
 	}
-	if err := os.Rename(stage, final); err != nil {
-		_ = os.Rename(backup, final)
+	if err := renamePath(stage, final); err != nil {
+		_ = renamePath(backup, final)
 		return err
 	}
 	if err := syncDir(s.profilesPath()); err != nil {
 		if hadBackup {
 			_ = os.RemoveAll(final)
-			_ = os.Rename(backup, final)
+			_ = renamePath(backup, final)
 		}
 		return err
 	}
@@ -840,7 +840,7 @@ func (s *Store) recoverProfiles() error {
 			if current == profileName {
 				final := s.profileDir(profileName)
 				if _, err := os.Stat(final); errors.Is(err, os.ErrNotExist) {
-					if err := os.Rename(filepath.Join(s.profilesPath(), name), final); err != nil {
+					if err := renamePath(filepath.Join(s.profilesPath(), name), final); err != nil {
 						return fmt.Errorf("restore account interrupted during deletion: %w", err)
 					}
 					continue
@@ -857,7 +857,7 @@ func (s *Store) recoverProfiles() error {
 			profileName := strings.TrimSuffix(strings.TrimPrefix(name, "."), ".backup")
 			final := s.profileDir(profileName)
 			if _, err := os.Stat(final); errors.Is(err, os.ErrNotExist) {
-				if err := os.Rename(filepath.Join(s.profilesPath(), name), final); err != nil {
+				if err := renamePath(filepath.Join(s.profilesPath(), name), final); err != nil {
 					return err
 				}
 			} else {
@@ -952,7 +952,7 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renamePath(tmpPath, path); err != nil {
 		return err
 	}
 	return syncDir(filepath.Dir(path))

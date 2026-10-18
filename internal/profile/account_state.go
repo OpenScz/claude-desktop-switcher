@@ -201,7 +201,7 @@ func replaceAccountFiles(appDataPath string, state accountState) error {
 		}
 		staged := filepath.Join(stage, name)
 		if _, err := os.Stat(staged); err == nil {
-			if err := os.Rename(staged, live); err != nil {
+			if err := renamePath(staged, live); err != nil {
 				return recovery.restore(err)
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -230,7 +230,7 @@ type pathRollback struct {
 func (r *pathRollback) move(live, backup string) error {
 	entry := movedPath{live: live, backup: backup}
 	if _, err := os.Stat(live); err == nil {
-		if err := os.Rename(live, backup); err != nil {
+		if err := renamePath(live, backup); err != nil {
 			return err
 		}
 		entry.existed = true
@@ -264,7 +264,7 @@ func (r *pathRollback) restore(cause error) error {
 				failures = append(failures, err)
 				continue
 			}
-			if err := os.Rename(entry.backup, entry.live); err != nil {
+			if err := renamePath(entry.backup, entry.live); err != nil {
 				failures = append(failures, fmt.Errorf("restore original %s: %w", entry.live, err))
 				continue
 			}

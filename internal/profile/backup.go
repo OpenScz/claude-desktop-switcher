@@ -627,7 +627,7 @@ func (s *Store) recoverImportedProfiles() error {
 					return err
 				}
 			}
-			if err := os.Rename(oldProfiles, finalProfiles); err != nil {
+			if err := renamePath(oldProfiles, finalProfiles); err != nil {
 				return fmt.Errorf("recover profiles interrupted during import: %w", err)
 			}
 			if oldCurrentExists {
@@ -636,7 +636,7 @@ func (s *Store) recoverImportedProfiles() error {
 						return err
 					}
 				}
-				if err := os.Rename(oldCurrent, current); err != nil {
+				if err := renamePath(oldCurrent, current); err != nil {
 					return fmt.Errorf("recover active profile interrupted during import: %w", err)
 				}
 			}
@@ -646,7 +646,7 @@ func (s *Store) recoverImportedProfiles() error {
 			if err := os.Remove(oldCurrent); err != nil {
 				return err
 			}
-		} else if err := os.Rename(oldCurrent, current); err != nil {
+		} else if err := renamePath(oldCurrent, current); err != nil {
 			return fmt.Errorf("recover active profile marker: %w", err)
 		}
 	}
@@ -675,30 +675,30 @@ func (s *Store) commitImported(stageProfiles, stageCurrent string) error {
 	if err := os.Remove(oldCurrent); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clean previous active profile import backup: %w", err)
 	}
-	if err := os.Rename(finalProfiles, oldProfiles); err != nil {
+	if err := renamePath(finalProfiles, oldProfiles); err != nil {
 		return fmt.Errorf("prepare existing profiles: %w", err)
 	}
 	hadCurrent := false
 	if _, err := os.Stat(filepath.Join(s.baseDir, currentFileName)); err == nil {
 		hadCurrent = true
-		if err := os.Rename(filepath.Join(s.baseDir, currentFileName), oldCurrent); err != nil {
-			_ = os.Rename(oldProfiles, finalProfiles)
+		if err := renamePath(filepath.Join(s.baseDir, currentFileName), oldCurrent); err != nil {
+			_ = renamePath(oldProfiles, finalProfiles)
 			return fmt.Errorf("prepare active profile marker: %w", err)
 		}
 	}
 	rollback := func() {
 		_ = os.RemoveAll(finalProfiles)
-		_ = os.Rename(oldProfiles, finalProfiles)
+		_ = renamePath(oldProfiles, finalProfiles)
 		_ = os.Remove(filepath.Join(s.baseDir, currentFileName))
 		if hadCurrent {
-			_ = os.Rename(oldCurrent, filepath.Join(s.baseDir, currentFileName))
+			_ = renamePath(oldCurrent, filepath.Join(s.baseDir, currentFileName))
 		}
 	}
-	if err := os.Rename(stageProfiles, finalProfiles); err != nil {
+	if err := renamePath(stageProfiles, finalProfiles); err != nil {
 		rollback()
 		return fmt.Errorf("install imported profiles: %w", err)
 	}
-	if err := os.Rename(stageCurrent, filepath.Join(s.baseDir, currentFileName)); err != nil {
+	if err := renamePath(stageCurrent, filepath.Join(s.baseDir, currentFileName)); err != nil {
 		rollback()
 		return fmt.Errorf("install active profile marker: %w", err)
 	}
