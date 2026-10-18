@@ -29,11 +29,19 @@ const (
 	processStablePolls     = 3
 	installCacheTTL        = 5 * time.Minute
 	mainWindowFocusTimeout = 8 * time.Second
+	windowsSWShow          = 5
 	windowsSWRestore       = 9
 	windowsWMClose         = 0x0010
 	gracefulCloseTimeout   = 2 * time.Second
 	forcedCloseTimeout     = 3 * time.Second
 	finalCloseGraceTimeout = 5 * time.Second
+
+	windowsWMQueryEndSession  = 0x0011
+	windowsWMEndSession       = 0x0016
+	windowsEndSessionCloseApp = 0x00000001
+	windowsSMTOAbortIfHung    = 0x0002
+	sessionEndReplyTimeout    = 5 * time.Second
+	sessionEndExitTimeout     = 15 * time.Second
 )
 
 type windowsInstallKind uint8
@@ -98,10 +106,92 @@ func (w *windowsPlatform) IsRunning() (bool, error) {
 }
 
 func (w *windowsPlatform) KillApp() error {
+	if exited, err := stopGracefully(w.requestSessionEnd, w.waitForExit); err != nil || exited {
+		return err
+	}
 	if hwnd, _ := w.mainWindow(); hwnd != 0 {
 		windowsPostMessage.Call(hwnd, windowsWMClose, 0, 0)
 	}
 	return stopWindowsProcesses(w.waitForExit, w.taskkillOwned, w.forceUntilExit)
+}
+
+// Closing Claude's window only hides it in the tray. Claude quits through its
+// normal cleanup, saving its sessions, when Windows asks applications to close
+// for a restart, so that request comes first and the forced stop stays the
+// fallback.
+func stopGracefully(requestSessionEnd func() bool, waitForExit func(time.Duration) (bool, error)) (bool, error) {
+	if !requestSessionEnd() {
+		return false, nil
+	}
+	return waitForExit(sessionEndExitTimeout)
+}
+
+func (w *windowsPlatform) requestSessionEnd() bool {
+	return endWindowsSession(w.sessionEndTargets(), sendSessionMessage)
+}
+
+func (w *windowsPlatform) sessionEndTargets() []uintptr {
+	roots, err := w.desktopProcessRoots()
+	if err != nil || len(roots) == 0 {
+		return nil
+	}
+	owned := make(map[uint32]bool, len(roots))
+	for _, pid := range roots {
+		owned[uint32(pid)] = true
+	}
+	var targets []uintptr
+	enumTopLevelWindows(func(hwnd uintptr) bool {
+		var pid uint32
+		windowsGetWindowProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+		if !owned[pid] || !strings.HasPrefix(windowClassName(hwnd), "Chrome_WidgetWin_") {
+			return true
+		}
+		if length, _, _ := windowsGetWindowTextLength.Call(hwnd); length > 0 {
+			targets = append(targets, hwnd)
+		}
+		return true
+	})
+	return targets
+}
+
+func windowClassName(hwnd uintptr) string {
+	buffer := make([]uint16, 256)
+	length, _, _ := windowsGetClassName.Call(hwnd, uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+	return windows.UTF16ToString(buffer[:length])
+}
+
+// endWindowsSession follows the Restart Manager order: every window is asked
+// first, and the session ends only when none of them refuses or hangs.
+func endWindowsSession(targets []uintptr, send func(hwnd, message, ending uintptr) (uintptr, bool)) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	for index, hwnd := range targets {
+		if reply, ok := send(hwnd, windowsWMQueryEndSession, 0); !ok || reply == 0 {
+			for _, accepted := range targets[:index] {
+				send(accepted, windowsWMEndSession, 0)
+			}
+			return false
+		}
+	}
+	for _, hwnd := range targets {
+		send(hwnd, windowsWMEndSession, 1)
+	}
+	return true
+}
+
+func sendSessionMessage(hwnd, message, ending uintptr) (uintptr, bool) {
+	var reply uintptr
+	ok, _, _ := windowsSendMessageTimeout.Call(
+		hwnd,
+		message,
+		ending,
+		windowsEndSessionCloseApp,
+		windowsSMTOAbortIfHung,
+		uintptr(sessionEndReplyTimeout.Milliseconds()),
+		uintptr(unsafe.Pointer(&reply)),
+	)
+	return reply, ok != 0
 }
 
 func stopWindowsProcesses(
@@ -257,7 +347,9 @@ func (w *windowsPlatform) focusMainWindow(timeout time.Duration) bool {
 }
 
 func focusWindow(hwnd uintptr) {
-	windowsShowWindow.Call(hwnd, windowsSWRestore)
+	minimized, _, _ := windowsIsIconic.Call(hwnd)
+	show := showCommand(minimized != 0)
+	windowsShowWindow.Call(hwnd, show)
 	windowsBringWindowToTop.Call(hwnd)
 	if focused, _, _ := windowsSetForegroundWindow.Call(hwnd); focused != 0 {
 		return
@@ -279,10 +371,19 @@ func focusWindow(hwnd uintptr) {
 		windowsAttachThreadInput.Call(currentThread, foregroundThread, 1)
 		defer windowsAttachThreadInput.Call(currentThread, foregroundThread, 0)
 	}
-	windowsShowWindow.Call(hwnd, windowsSWRestore)
+	windowsShowWindow.Call(hwnd, show)
 	windowsBringWindowToTop.Call(hwnd)
 	windowsSetForegroundWindow.Call(hwnd)
 	windowsSetFocus.Call(hwnd)
+}
+
+// SW_RESTORE also takes a maximized window out of its maximized size, so it is
+// used only for a minimized window.
+func showCommand(minimized bool) uintptr {
+	if minimized {
+		return windowsSWRestore
+	}
+	return windowsSWShow
 }
 
 func (w *windowsPlatform) LoginWindowVisible() (bool, error) {
@@ -300,25 +401,46 @@ func (w *windowsPlatform) mainWindow() (uintptr, error) {
 		owned[pid] = true
 	}
 	var found uintptr
-	callback := windows.NewCallback(func(hwnd, _ uintptr) uintptr {
+	enumTopLevelWindows(func(hwnd uintptr) bool {
 		var pid uint32
 		windowsGetWindowProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
 		if !owned[int(pid)] {
-			return 1
+			return true
 		}
 		visible, _, _ := windowsIsWindowVisible.Call(hwnd)
 		if visible == 0 {
-			return 1
+			return true
 		}
 		length, _, _ := windowsGetWindowTextLength.Call(hwnd)
 		if length > 0 {
 			found = hwnd
-			return 0
+			return false
 		}
-		return 1
+		return true
 	})
-	windowsEnumWindows.Call(callback, 0)
 	return found, nil
+}
+
+var topLevelWindows struct {
+	sync.Mutex
+	visit func(uintptr) bool
+}
+
+// Go never frees a Windows callback and stops the whole process after 2000 of
+// them, so every enumeration shares this one instead of creating its own.
+var topLevelWindowsCallback = windows.NewCallback(func(hwnd, _ uintptr) uintptr {
+	if topLevelWindows.visit(hwnd) {
+		return 1
+	}
+	return 0
+})
+
+func enumTopLevelWindows(visit func(hwnd uintptr) bool) {
+	topLevelWindows.Lock()
+	defer topLevelWindows.Unlock()
+	topLevelWindows.visit = visit
+	windowsEnumWindows.Call(topLevelWindowsCallback, 0)
+	topLevelWindows.visit = nil
 }
 
 var installCache struct {
@@ -343,6 +465,9 @@ var (
 	windowsAttachThreadInput   = windowsMainWindowAPI.NewProc("AttachThreadInput")
 	windowsSetFocus            = windowsMainWindowAPI.NewProc("SetFocus")
 	windowsPostMessage         = windowsMainWindowAPI.NewProc("PostMessageW")
+	windowsSendMessageTimeout  = windowsMainWindowAPI.NewProc("SendMessageTimeoutW")
+	windowsIsIconic            = windowsMainWindowAPI.NewProc("IsIconic")
+	windowsGetClassName        = windowsMainWindowAPI.NewProc("GetClassNameW")
 	windowsGetCurrentThreadID  = windowsKernel32.NewProc("GetCurrentThreadId")
 )
 
