@@ -323,6 +323,23 @@ func (s *trayState) workingSessions() []string {
 	return sessions.Working(filepath.Join(home, ".claude"), appData)
 }
 
+// Switching and adding an account close Claude Desktop on the way, so they
+// always ask first and say whether any Claude Code session is working.
+func closingPrompt(title, consequence, question string, working []string) (string, string) {
+	if len(working) == 0 {
+		return title, consequence + "\n\nNo Claude Code session is working right now."
+	}
+	return title, stopWorkNotice(working) + "\n" + consequence + " You can continue these sessions afterwards.\n\n" + question
+}
+
+func switchPrompt(label string, working []string) (string, string) {
+	return closingPrompt("Switch to "+label+"?", "Claude Desktop will close and reopen on "+label+" (about half a minute).", "Switch anyway?", working)
+}
+
+func addAccountPrompt(working []string) (string, string) {
+	return closingPrompt("Add another account?", "Claude Desktop will close and reopen signed out, so you can sign in with the other account.", "Add it anyway?", working)
+}
+
 // Closing Claude Desktop stops every Claude Code session running a turn in it,
 // so actions that close it ask first while any is busy.
 func confirmStoppingWork(title, consequence, question string, working []string) bool {

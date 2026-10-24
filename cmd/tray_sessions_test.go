@@ -129,6 +129,40 @@ func TestContinueSessionPromptSaysWhatTheSwitchWillDo(t *testing.T) {
 	}
 }
 
+func TestSwitchPromptAsksEvenWhenNoSessionIsWorking(t *testing.T) {
+	title, message := switchPrompt("private@accounts.test", nil)
+	if title != "Switch to private@accounts.test?" {
+		t.Fatalf("title = %q", title)
+	}
+	want := "Claude Desktop will close and reopen on private@accounts.test (about half a minute).\n\n" +
+		"No Claude Code session is working right now."
+	if message != want {
+		t.Fatalf("message = %q"+"\nwant %q", message, want)
+	}
+
+	_, busy := switchPrompt("private@accounts.test", []string{"Planificare rapidă mesei"})
+	want = "These Claude Code sessions are working right now and will stop:\n• Planificare rapidă mesei\n\n" +
+		"Claude Desktop will close and reopen on private@accounts.test (about half a minute). You can continue these sessions afterwards.\n\nSwitch anyway?"
+	if busy != want {
+		t.Fatalf("message with busy sessions = %q"+"\nwant %q", busy, want)
+	}
+}
+
+func TestAddAccountPromptAsksBeforeClaudeCloses(t *testing.T) {
+	title, message := addAccountPrompt(nil)
+	if title != "Add another account?" {
+		t.Fatalf("title = %q", title)
+	}
+	want := "Claude Desktop will close and reopen signed out, so you can sign in with the other account.\n\n" +
+		"No Claude Code session is working right now."
+	if message != want {
+		t.Fatalf("message = %q"+"\nwant %q", message, want)
+	}
+	if _, busy := addAccountPrompt([]string{"Site design"}); !strings.HasSuffix(busy, "You can continue these sessions afterwards.\n\nAdd it anyway?") {
+		t.Fatalf("message with busy sessions = %q", busy)
+	}
+}
+
 func TestStopWorkNoticeListsAtMostFiveSessions(t *testing.T) {
 	working := []string{"One", "Two\nlines", "Three", "Four", "Five", "Six", "Seven"}
 	want := "These Claude Code sessions are working right now and will stop:\n" +
