@@ -13,13 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * detect current Windows Claude profile and login log paths ([#14](https://github.com/OpenScz/claude-desktop-switcher/issues/14)) ([543acf5](https://github.com/OpenScz/claude-desktop-switcher/commit/543acf506c696bce28eb0a08e8b093817648cb20))
 * make account switching on Windows more reliable ([#17](https://github.com/OpenScz/claude-desktop-switcher/issues/17)) ([ed99588](https://github.com/OpenScz/claude-desktop-switcher/commit/ed99588dd69efb967d8cc639813ec6e2c1a78837))
 
-## [1.2.1](https://github.com/OpenScz/claude-desktop-switcher/compare/v1.2.0...v1.2.1) (2026-10-26)
-
-### Bug Fixes
-
-* detect current Windows Claude profile and login log paths ([#14](https://github.com/OpenScz/claude-desktop-switcher/pull/14))
-* make account switching on Windows more reliable ([#17](https://github.com/OpenScz/claude-desktop-switcher/pull/17))
-
 ## [1.2.0](https://github.com/TinoA/claude-desktop-switcher/compare/v1.1.0...v1.2.0) (2026-07-25)
 
 
