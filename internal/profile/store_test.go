@@ -900,6 +900,69 @@ func TestLatestAccountLogStateAcceptsStableSignedInStartup(t *testing.T) {
 	}
 }
 
+func TestLatestAccountLogStateUsesCurrentWindowsLocalLog(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows log layout")
+	}
+	roaming := t.TempDir()
+	local := t.TempDir()
+	t.Setenv("APPDATA", roaming)
+	t.Setenv("LOCALAPPDATA", local)
+	appData := filepath.Join(roaming, "Claude")
+	legacyLog := filepath.Join(appData, "logs", "main.log")
+	currentLog := filepath.Join(local, "Claude", "Logs", "main.log")
+	startedAt := time.Date(2026, 10, 9, 18, 0, 0, 0, time.Local)
+	mustWriteFile(t, legacyLog, "2026-09-09 18:00:00 [info] User logged out\n")
+	mustWriteFile(t, currentLog, "")
+	if err := os.Chtimes(legacyLog, startedAt.Add(-time.Hour), startedAt.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	offset := LoginLogOffsetAt(appData)
+	mustWriteFile(t, currentLog, "2026-10-09 18:00:01 [info] claude.ai account active and logged in\n")
+	if got := LatestAccountLogStateSince(appData, offset, startedAt); got != AccountLogSignedIn {
+		t.Fatalf("account log state = %v, want signed in from Local logs", got)
+	}
+}
+
+func TestWindowsAccountLogPathKeepsLegacyProfiles(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows log layout")
+	}
+	for _, tc := range []struct {
+		name      string
+		isolated  bool
+		localFile bool
+		localDir  bool
+	}{
+		{name: "local log missing"},
+		{name: "isolated profile", isolated: true, localFile: true},
+		{name: "local log is a directory", localDir: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roaming := t.TempDir()
+			local := t.TempDir()
+			t.Setenv("APPDATA", roaming)
+			t.Setenv("LOCALAPPDATA", local)
+			appData := filepath.Join(roaming, "Claude")
+			if tc.isolated {
+				appData = t.TempDir()
+			}
+			localLog := filepath.Join(local, "Claude", "Logs", "main.log")
+			if tc.localFile {
+				mustWriteFile(t, localLog, "unrelated login")
+			}
+			if tc.localDir {
+				if err := os.MkdirAll(localLog, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, want := accountLogPath(appData), filepath.Join(appData, "logs", "main.log"); got != want {
+				t.Fatalf("log path = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestIdentityEmailChangedAtRequiresStableIdentity(t *testing.T) {
 	store := newTestStore(t)
 	saved := syntheticAppData(t, "saved")
