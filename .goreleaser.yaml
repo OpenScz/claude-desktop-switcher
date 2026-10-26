@@ -9,7 +9,6 @@ builds:
     ldflags:
       - -s -w -X github.com/TinoA/claude-desktop-switcher/cmd.Version={{.Version}}
     goos:
-      - darwin
       - windows
     goarch:
       - amd64
