@@ -215,3 +215,18 @@ func TestStopWindowsProcessesReturnsInspectionError(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestShowCommandKeepsAMaximizedWindowMaximized(t *testing.T) {
+	if got := showCommand(false); got != windowsSWShow {
+		t.Fatalf("showCommand(visible) = %d, want SW_SHOW", got)
+	}
+	if got := showCommand(true); got != windowsSWRestore {
+		t.Fatalf("showCommand(minimized) = %d, want SW_RESTORE", got)
+	}
+}
+
+func TestEnumTopLevelWindowsCanRunMoreTimesThanGoAllowsCallbacks(t *testing.T) {
+	for range 2500 {
+		enumTopLevelWindows(func(uintptr) bool { return false })
+	}
+}

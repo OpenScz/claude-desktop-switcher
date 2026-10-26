@@ -36,6 +36,10 @@ func startupArgs(args []string, goos string) []string {
 }
 
 func init() {
+	// Explorer is the parent for a double-click or a desktop shortcut, and cobra's
+	// guard for command-line tools would then wait five seconds and exit instead
+	// of opening the tray.
+	cobra.MousetrapHelpText = ""
 	root.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "show paths and actions without changing data")
 	root.AddCommand(cmdSave, cmdAdd, cmdUse, cmdList, cmdDelete, cmdStatus, cmdTray, cmdExport, cmdImport)
 }

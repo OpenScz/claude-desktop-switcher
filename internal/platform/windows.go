@@ -29,6 +29,7 @@ const (
 	processStablePolls     = 3
 	installCacheTTL        = 5 * time.Minute
 	mainWindowFocusTimeout = 8 * time.Second
+	windowsSWShow          = 5
 	windowsSWRestore       = 9
 	windowsWMClose         = 0x0010
 	gracefulCloseTimeout   = 2 * time.Second
@@ -257,7 +258,9 @@ func (w *windowsPlatform) focusMainWindow(timeout time.Duration) bool {
 }
 
 func focusWindow(hwnd uintptr) {
-	windowsShowWindow.Call(hwnd, windowsSWRestore)
+	minimized, _, _ := windowsIsIconic.Call(hwnd)
+	show := showCommand(minimized != 0)
+	windowsShowWindow.Call(hwnd, show)
 	windowsBringWindowToTop.Call(hwnd)
 	if focused, _, _ := windowsSetForegroundWindow.Call(hwnd); focused != 0 {
 		return
@@ -279,10 +282,19 @@ func focusWindow(hwnd uintptr) {
 		windowsAttachThreadInput.Call(currentThread, foregroundThread, 1)
 		defer windowsAttachThreadInput.Call(currentThread, foregroundThread, 0)
 	}
-	windowsShowWindow.Call(hwnd, windowsSWRestore)
+	windowsShowWindow.Call(hwnd, show)
 	windowsBringWindowToTop.Call(hwnd)
 	windowsSetForegroundWindow.Call(hwnd)
 	windowsSetFocus.Call(hwnd)
+}
+
+// SW_RESTORE also takes a maximized window out of its maximized size, so it is
+// used only for a minimized window.
+func showCommand(minimized bool) uintptr {
+	if minimized {
+		return windowsSWRestore
+	}
+	return windowsSWShow
 }
 
 func (w *windowsPlatform) LoginWindowVisible() (bool, error) {
@@ -300,25 +312,46 @@ func (w *windowsPlatform) mainWindow() (uintptr, error) {
 		owned[pid] = true
 	}
 	var found uintptr
-	callback := windows.NewCallback(func(hwnd, _ uintptr) uintptr {
+	enumTopLevelWindows(func(hwnd uintptr) bool {
 		var pid uint32
 		windowsGetWindowProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
 		if !owned[int(pid)] {
-			return 1
+			return true
 		}
 		visible, _, _ := windowsIsWindowVisible.Call(hwnd)
 		if visible == 0 {
-			return 1
+			return true
 		}
 		length, _, _ := windowsGetWindowTextLength.Call(hwnd)
 		if length > 0 {
 			found = hwnd
-			return 0
+			return false
 		}
-		return 1
+		return true
 	})
-	windowsEnumWindows.Call(callback, 0)
 	return found, nil
+}
+
+var topLevelWindows struct {
+	sync.Mutex
+	visit func(uintptr) bool
+}
+
+// Go never frees a Windows callback and stops the whole process after 2000 of
+// them, so every enumeration shares this one instead of creating its own.
+var topLevelWindowsCallback = windows.NewCallback(func(hwnd, _ uintptr) uintptr {
+	if topLevelWindows.visit(hwnd) {
+		return 1
+	}
+	return 0
+})
+
+func enumTopLevelWindows(visit func(hwnd uintptr) bool) {
+	topLevelWindows.Lock()
+	defer topLevelWindows.Unlock()
+	topLevelWindows.visit = visit
+	windowsEnumWindows.Call(topLevelWindowsCallback, 0)
+	topLevelWindows.visit = nil
 }
 
 var installCache struct {
@@ -343,6 +376,7 @@ var (
 	windowsAttachThreadInput   = windowsMainWindowAPI.NewProc("AttachThreadInput")
 	windowsSetFocus            = windowsMainWindowAPI.NewProc("SetFocus")
 	windowsPostMessage         = windowsMainWindowAPI.NewProc("PostMessageW")
+	windowsIsIconic            = windowsMainWindowAPI.NewProc("IsIconic")
 	windowsGetCurrentThreadID  = windowsKernel32.NewProc("GetCurrentThreadId")
 )
 

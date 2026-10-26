@@ -3,7 +3,15 @@ package cmd
 import (
 	"slices"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
+
+func TestExplorerStartIsNotStoppedByTheCommandLineGuard(t *testing.T) {
+	if cobra.MousetrapHelpText != "" {
+		t.Fatal("cobra would exit a tray started by a double-click or a desktop shortcut")
+	}
+}
 
 func TestStartupArgs(t *testing.T) {
 	tests := []struct {

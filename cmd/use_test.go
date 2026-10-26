@@ -72,6 +72,19 @@ func TestSwitchProfileRefusesUnusableTargetBeforeStopping(t *testing.T) {
 	}
 }
 
+func TestSwitchProfileKeepsClaudeClosedWhenRecoveryIsRequired(t *testing.T) {
+	events := []string{}
+	store := &fakeSwitchStore{events: &events, exists: true, current: "outgoing", health: profile.HealthUsable, restoreErr: profile.ErrRecoveryRequired}
+	p := &fakePlatform{events: &events, appData: t.TempDir(), running: true}
+	err := switchProfileWith("incoming", store, p, &bytes.Buffer{})
+	if !errors.Is(err, profile.ErrRecoveryRequired) {
+		t.Fatalf("recovery marker was lost: %v", err)
+	}
+	if containsEvent(events, "launch") || !containsEvent(events, "stop") {
+		t.Fatalf("unsafe launch after incomplete recovery: %v", events)
+	}
+}
+
 func TestSwitchProfileLaunchFailureKeepsCommittedIncomingState(t *testing.T) {
 	events := []string{}
 	store := &fakeSwitchStore{events: &events, exists: true, current: "outgoing", health: profile.HealthUsable}

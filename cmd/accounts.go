@@ -14,7 +14,9 @@ func enrichLiveAccounts(store *profile.Store, profiles []profile.Meta) {
 	}
 	paths := make(map[string]string, len(profiles))
 	for _, p := range profiles {
-		paths[p.Name] = store.ProfileCookiesPath(p.Name)
+		if path := store.ProfileCookiesPath(p.Name); path != "" {
+			paths[p.Name] = path
+		}
 	}
 	infos := account.FetchMany(paths)
 	for i := range profiles {
