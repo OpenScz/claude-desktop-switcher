@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1](https://github.com/OpenScz/claude-desktop-switcher/compare/v1.2.0...v1.2.1) (2026-10-26)
+
+### Bug Fixes
+
+* detect current Windows Claude profile and login log paths ([#14](https://github.com/OpenScz/claude-desktop-switcher/pull/14))
+* make account switching on Windows more reliable ([#17](https://github.com/OpenScz/claude-desktop-switcher/pull/17))
+
 ## [1.2.0](https://github.com/TinoA/claude-desktop-switcher/compare/v1.1.0...v1.2.0) (2026-07-25)
 
 
