@@ -3,6 +3,7 @@ package profile
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -329,4 +330,97 @@ func writeRecoveryProfile(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	mustWriteFile(t, filepath.Join(path, metaFile), `{}`)
+}
+
+func TestEncryptedImportRejectsMismatchedMetadataName(t *testing.T) {
+	store := newTestStore(t)
+	writeRecoveryProfile(t, store.profileDir("keep"))
+	outside := filepath.Join(store.baseDir, "outside")
+	writeRecoveryProfile(t, outside)
+	outsidePath := filepath.Join(outside, metaFile)
+	before, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"../outside", outside, "other"} {
+		t.Run(name, func(t *testing.T) {
+			var archive bytes.Buffer
+			writer := zip.NewWriter(&archive)
+			if err := addBackupBytes(writer, "manifest.json", []byte(`{}`)); err != nil {
+				t.Fatal(err)
+			}
+			if err := addBackupBytes(writer, currentFileName, nil); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(Meta{Name: name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := addBackupBytes(writer, "profiles/safe/meta.json", data); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			encrypted, err := encryptBackup(archive.Bytes(), "test password")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "crafted.csb")
+			if err := os.WriteFile(path, encrypted, filePerm); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Import(path, "test password"); err == nil {
+				profiles, listErr := store.List()
+				if listErr != nil {
+					t.Fatal(listErr)
+				}
+				for _, meta := range profiles {
+					_, _ = store.BackfillAccountMetadata(meta.Name)
+				}
+				t.Error("import accepted mismatched metadata name")
+			}
+			if !store.Exists("keep") || store.Exists("safe") {
+				t.Error("rejected import replaced existing profiles")
+			}
+			after, err := os.ReadFile(outsidePath)
+			if err != nil || !bytes.Equal(after, before) {
+				t.Fatalf("outside metadata changed: %q/%v", after, err)
+			}
+		})
+	}
+}
+
+func TestImportPreservesLegacyMetadataFallback(t *testing.T) {
+	for _, metadata := range []string{"", `{}`, `{`, `{"name":"safe"}`} {
+		t.Run(metadata, func(t *testing.T) {
+			var archive bytes.Buffer
+			writer := zip.NewWriter(&archive)
+			for _, entry := range []struct{ name, data string }{
+				{"manifest.json", `{}`},
+				{currentFileName, ""},
+				{"profiles/safe/placeholder", ""},
+			} {
+				if err := addBackupBytes(writer, entry.name, []byte(entry.data)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if metadata != "" {
+				if err := addBackupBytes(writer, "profiles/safe/meta.json", []byte(metadata)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store := newTestStore(t)
+			if err := store.installBackupArchive(archive.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+			profiles, err := store.List()
+			if err != nil || len(profiles) != 1 || profiles[0].Name != "safe" {
+				t.Fatalf("legacy imported profiles = %+v/%v", profiles, err)
+			}
+		})
+	}
 }

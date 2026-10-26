@@ -178,7 +178,7 @@ func switchProfileWith(name string, store switchStore, p platform.Platform, out 
 		stopped = true
 	}
 	relaunchPrevious := func(operationErr error) error {
-		if !stopped {
+		if !stopped || errors.Is(operationErr, profile.ErrRecoveryRequired) {
 			return operationErr
 		}
 		if launchErr := p.LaunchApp(); launchErr != nil {

@@ -24,6 +24,37 @@ func TestTrayLockRejectsDuplicateImmediately(t *testing.T) {
 	}
 }
 
+func TestBackgroundReadsPauseWhileProfilesChange(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	state := &trayState{}
+	if state.backgroundReadsPaused() {
+		t.Fatal("background reads paused without an operation")
+	}
+	state.switching = true
+	if !state.backgroundReadsPaused() {
+		t.Fatal("background reads continued during a switch")
+	}
+	state.switching = false
+	state.workflow = &addWorkflow{}
+	if !state.backgroundReadsPaused() {
+		t.Fatal("background reads continued while an account was being added")
+	}
+	state.workflow = nil
+	lock, err := acquireOperationLock("operation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.backgroundReadsPaused() {
+		t.Fatal("background reads continued while another operation held the lock")
+	}
+	lock.Release()
+	if state.backgroundReadsPaused() {
+		t.Fatal("background reads stayed paused after the operation finished")
+	}
+}
+
 func TestClaudeMenuState(t *testing.T) {
 	tests := []struct {
 		name                     string

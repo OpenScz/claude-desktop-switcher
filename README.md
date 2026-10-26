@@ -59,7 +59,9 @@ The app installs for your Windows user and normally does not require administrat
 
 ### Switch accounts
 
-Right-click the tray icon, open **Accounts**, and select the account you want. Claude Desktop Switcher prepares the saved session and opens Claude Desktop again with that account.
+Right-click the tray icon, open **Accounts**, and select the account you want. Claude Desktop Switcher prepares the saved session and opens Claude Desktop again with that account. A small progress card stays in the middle of the screen while it works.
+
+Switching closes Claude Desktop. Claude Desktop keeps running in the system tray when its window closes and offers no way for another program to make it quit with its own cleanup, so Claude Code sessions running inside Claude Desktop are stopped. They can be continued after Claude Desktop reopens.
 
 ### Add an account
 
@@ -148,7 +150,7 @@ it does not uninstall Claude Desktop or remove saved profiles.
 
 GitHub Actions verifies module metadata, runs `go vet`, race-enabled tests, formatting/import linting, and reachable-vulnerability scanning before publishing versioned Windows installers for `amd64` and `arm64`, CLI archives, and checksums. The tray checks this repository for new releases and links to the latest download; updates are not installed silently.
 
-The Windows installer uses a graphical build that opens the tray on double-click without showing a console window. CLI archives remain console applications.
+The Windows build is graphical: a double-click, a desktop shortcut, or the installer's Start and Startup shortcuts open the tray without showing a console window. CLI archives remain console applications.
 
 This Windows-focused project is maintained at [`TinoA/claude-desktop-switcher`](https://github.com/TinoA/claude-desktop-switcher) and is based on [`FranCalveyra/claude-desktop-swap`](https://github.com/FranCalveyra/claude-desktop-swap).
 
