@@ -963,6 +963,51 @@ func TestWindowsAccountLogPathKeepsLegacyProfiles(t *testing.T) {
 	}
 }
 
+func TestStoreInstallReadsTheLocalLog(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows log layout")
+	}
+	local := t.TempDir()
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("LOCALAPPDATA", local)
+	localLog := filepath.Join(local, "Claude", "Logs", "main.log")
+	mustWriteFile(t, localLog, "")
+	separate := filepath.Join(local, "Isolated", "Profile")
+	for _, tc := range []struct {
+		name    string
+		appData string
+		want    string
+	}{
+		{"moved out of the package by Claude 3", filepath.Join(local, "Claude-Data", "claude_pzs8sxrjxfjjc"), localLog},
+		{"inside the Store package", filepath.Join(local, "Packages", "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude"), localLog},
+		{"a window with its own data folder", separate, filepath.Join(separate, "logs", "main.log")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := accountLogPath(tc.appData); got != tc.want {
+				t.Fatalf("log path = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStoreInstallSeesTheSignInInTheLocalLog(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows log layout")
+	}
+	local := t.TempDir()
+	t.Setenv("APPDATA", t.TempDir())
+	t.Setenv("LOCALAPPDATA", local)
+	appData := filepath.Join(local, "Claude-Data", "claude_pzs8sxrjxfjjc")
+	localLog := filepath.Join(local, "Claude", "Logs", "main.log")
+	startedAt := time.Date(2026, 11, 1, 1, 2, 0, 0, time.Local)
+	mustWriteFile(t, localLog, "2026-10-29 08:35:04 [info] claude.ai account active and logged in\n")
+	offset := LoginLogOffsetAt(appData)
+	mustWriteFile(t, localLog, "2026-10-29 08:35:04 [info] claude.ai account active and logged in\n2026-11-01 01:02:15 [info] claude.ai account active and logged in\n")
+	if got := LatestAccountLogStateSince(appData, offset, startedAt); got != AccountLogSignedIn {
+		t.Fatalf("account log state = %v, want signed in", got)
+	}
+}
+
 func TestIdentityEmailChangedAtRequiresStableIdentity(t *testing.T) {
 	store := newTestStore(t)
 	saved := syntheticAppData(t, "saved")

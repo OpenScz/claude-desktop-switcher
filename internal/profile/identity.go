@@ -128,16 +128,34 @@ func LoginLogOffsetAt(appDataPath string) int64 {
 }
 
 func accountLogPath(appDataPath string) string {
-	roaming := os.Getenv("APPDATA")
 	local := os.Getenv("LOCALAPPDATA")
-	if runtime.GOOS == "windows" && roaming != "" && local != "" &&
-		strings.EqualFold(filepath.Clean(appDataPath), filepath.Join(roaming, "Claude")) {
+	if runtime.GOOS == "windows" && local != "" && logsLiveInLocal(appDataPath, os.Getenv("APPDATA"), local) {
 		path := filepath.Join(local, "Claude", "Logs", "main.log")
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path
 		}
 	}
 	return filepath.Join(appDataPath, "logs", "main.log")
+}
+
+// The main Claude window writes its log to %LOCALAPPDATA%\Claude\Logs, both in
+// the classic install (data in %APPDATA%\Claude) and in the Store one, whose
+// data sits in the package or, since Claude 3, in %LOCALAPPDATA%\Claude-Data.
+// A window started with a data folder of its own keeps its log there.
+func logsLiveInLocal(appDataPath, roaming, local string) bool {
+	clean := filepath.Clean(appDataPath)
+	if roaming != "" && strings.EqualFold(clean, filepath.Join(roaming, "Claude")) {
+		return true
+	}
+	if strings.EqualFold(filepath.Dir(clean), filepath.Join(local, "Claude-Data")) {
+		return true
+	}
+	roamingInPackage := filepath.Dir(clean)
+	localCache := filepath.Dir(roamingInPackage)
+	return strings.EqualFold(filepath.Base(clean), "Claude") &&
+		strings.EqualFold(filepath.Base(roamingInPackage), "Roaming") &&
+		strings.EqualFold(filepath.Base(localCache), "LocalCache") &&
+		strings.EqualFold(filepath.Dir(filepath.Dir(localCache)), filepath.Join(local, "Packages"))
 }
 
 func LatestAccountLogStateSince(appDataPath string, offset int64, createdAt time.Time) AccountLogState {
