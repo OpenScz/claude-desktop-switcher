@@ -89,10 +89,7 @@ func (s *trayState) updateSessionMenusLocked(profiles []profile.Meta, active str
 		if menu == nil {
 			menu = s.newSessionMenuLocked(meta.Name, label)
 		}
-		title := menuLabel(label)
-		if running && active == meta.Name {
-			title = "✓ " + title + " (in use)"
-		}
+		title := continueMenuTitle(label, running && active == meta.Name, s.separateShown[meta.Name])
 		if title != menu.title {
 			menu.item.SetTitle(title)
 			menu.title = title
@@ -111,6 +108,17 @@ func (s *trayState) updateSessionMenusLocked(profiles []profile.Meta, active str
 			s.retireSessionMenuLocked(name)
 		}
 	}
+}
+
+func continueMenuTitle(label string, inMainWindow bool, separate separateWindowState) string {
+	title := menuLabel(label)
+	switch {
+	case inMainWindow:
+		return "✓ " + title + " (in use)"
+	case separate.open && !separate.otherAccount:
+		return "✓ " + title + " (separate window)"
+	}
+	return title
 }
 
 func (s *trayState) newSessionMenuLocked(name, label string) *sessionMenu {
@@ -221,12 +229,17 @@ func (s *trayState) continueSession(name string, session sessions.Session) {
 		s.setStatus("Session opened on " + label)
 		return
 	}
+	if folder, ok := s.separateWindowWith(name); ok {
+		go s.continueInSeparateWindow(label, folder, link)
+		return
+	}
 	if running {
 		title, message := continueSessionPrompt(session, label, s.workingSessions(), time.Now())
 		if confirmed, err := nativeTrayConfirm(title, message); err != nil || !confirmed {
 			return
 		}
 	}
+	s.syncSeparateWindows()
 	if !s.beginSwitch() {
 		s.setStatus("Wait for the current operation to finish")
 		return
@@ -260,6 +273,22 @@ func (s *trayState) switchAndContinue(name, label, link string) {
 		return
 	}
 	s.setStatus("Session opened on " + label)
+}
+
+// Links opened through Windows always reach the main window, so the link goes
+// to Claude started with the separate window's data folder, which hands it to
+// that running window.
+func (s *trayState) continueInSeparateWindow(label, folder, link string) {
+	card := startNativeOverlay("Opening the session...", false, s.launchPath())
+	err := s.platform.(platform.SeparateWindowRunner).OpenSeparateWindow(folder, link)
+	time.Sleep(sessionOpeningCardTime)
+	card.Close()
+	if err != nil {
+		s.setStatus("Could not open the session: " + err.Error())
+		trayWarning("Could not open the session", err.Error())
+		return
+	}
+	s.setStatus("Session opened in the separate window of " + label)
 }
 
 // A link sent while Claude is still starting can reach a process that is not

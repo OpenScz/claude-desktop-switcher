@@ -98,6 +98,10 @@ func primaryAccountUUIDHash(state accountState) string {
 	return accountIdentifierHash(state.CoworkOwner)
 }
 
+func AccountUUIDHashAt(appDataPath string) string {
+	return primaryAccountUUIDHashAt(appDataPath)
+}
+
 func primaryAccountUUIDHashAt(appDataPath string) string {
 	config, _, err := readJSONObject(filepath.Join(appDataPath, claudeConfigFile))
 	if err == nil {

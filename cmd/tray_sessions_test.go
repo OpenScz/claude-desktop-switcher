@@ -163,6 +163,27 @@ func TestAddAccountPromptAsksBeforeClaudeCloses(t *testing.T) {
 	}
 }
 
+func TestContinueMenuTitleSaysWhereTheAccountIsOpen(t *testing.T) {
+	tests := []struct {
+		name         string
+		inMainWindow bool
+		separate     separateWindowState
+		want         string
+	}{
+		{"closed", false, separateWindowState{}, "private@accounts.test"},
+		{"in the main window", true, separateWindowState{}, "✓ private@accounts.test (in use)"},
+		{"in its separate window", false, separateWindowState{open: true}, "✓ private@accounts.test (separate window)"},
+		{"its window holds another account", false, separateWindowState{open: true, otherAccount: true}, "private@accounts.test"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := continueMenuTitle("private@accounts.test", test.inMainWindow, test.separate); got != test.want {
+				t.Fatalf("continueMenuTitle() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestStopWorkNoticeListsAtMostFiveSessions(t *testing.T) {
 	working := []string{"One", "Two\nlines", "Three", "Four", "Five", "Six", "Seven"}
 	want := "These Claude Code sessions are working right now and will stop:\n" +
