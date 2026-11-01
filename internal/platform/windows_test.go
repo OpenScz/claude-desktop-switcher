@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -228,5 +229,45 @@ func TestShowCommandKeepsAMaximizedWindowMaximized(t *testing.T) {
 func TestEnumTopLevelWindowsCanRunMoreTimesThanGoAllowsCallbacks(t *testing.T) {
 	for range 2500 {
 		enumTopLevelWindows(func(uintptr) bool { return false })
+	}
+}
+
+func TestMsixDataFolderFollowsClaudesMoveOutOfThePackage(t *testing.T) {
+	family := strings.ToLower(windowsPackageFamily)
+	tests := []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{"Claude 2 keeps its data in the package", []string{"packaged/Local State"}, "packaged"},
+		{"Claude 3 moved it and left a marker", []string{"packaged/.user-data-left." + family, "moved/Local State"}, "moved"},
+		{"only the moved folder holds data", []string{"moved/config.json"}, "moved"},
+		{"moved back into the package", []string{"packaged/.user-data-back." + family, "packaged/Local State", "moved/Local State"}, "packaged"},
+		{"both hold data without a marker", []string{"packaged/config.json", "moved/config.json"}, "packaged"},
+		{"the moved folder wins over a Roaming profile", []string{"moved/config.json", "roaming/config.json"}, "moved"},
+		{"nothing yet", nil, "packaged"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			local, appData := t.TempDir(), t.TempDir()
+			folders := map[string]string{
+				"packaged": filepath.Join(local, "Packages", windowsPackageFamily, "LocalCache", "Roaming", "Claude"),
+				"moved":    filepath.Join(local, "Claude-Data", family),
+				"roaming":  filepath.Join(appData, "Claude"),
+			}
+			for _, file := range test.files {
+				folder, name, _ := strings.Cut(file, "/")
+				path := filepath.Join(folders[folder], name)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := msixDataFolder(local, appData); got != folders[test.want] {
+				t.Fatalf("msixDataFolder() = %q, want %q", got, folders[test.want])
+			}
+		})
 	}
 }

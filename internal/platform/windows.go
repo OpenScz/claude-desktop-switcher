@@ -552,13 +552,6 @@ func processImagePath(pid uint32) string {
 func detectWindowsInstall() (windowsInstall, []windowsInstall) {
 	local := os.Getenv("LOCALAPPDATA")
 	appData := os.Getenv("APPDATA")
-	msixRoot := filepath.Join(local, "Packages", windowsPackageFamily, "LocalCache", "Roaming", "Claude")
-	if _, err := os.Stat(msixRoot); errors.Is(err, os.ErrNotExist) {
-		roamingRoot := filepath.Join(appData, "Claude")
-		if info, err := os.Stat(roamingRoot); err == nil && info.IsDir() {
-			msixRoot = roamingRoot
-		}
-	}
 	candidates := make([]windowsInstall, 0, 6)
 	if registered, ok := detectRegisteredWin32(appData); ok {
 		candidates = append(candidates, registered)
@@ -577,7 +570,7 @@ func detectWindowsInstall() (windowsInstall, []windowsInstall) {
 	if info, err := os.Stat(msixPackageDir); err == nil && info.IsDir() {
 		candidates = appendInstallCandidate(candidates, windowsInstall{
 			id:          "msix:" + windowsPackageFamily,
-			root:        msixRoot,
+			root:        msixDataFolder(local, appData),
 			processRoot: filepath.Join(os.Getenv("ProgramFiles"), "WindowsApps"),
 			kind:        installMSIX,
 			msix:        true,
@@ -628,6 +621,38 @@ func detectWindowsInstall() (windowsInstall, []windowsInstall) {
 		}
 	}
 	return selected, alternatives
+}
+
+// Claude 3 moves its data out of the Store package's redirected Roaming folder
+// into %LOCALAPPDATA%\Claude-Data\<package family> and leaves a
+// ".user-data-left.<family>" marker behind; ".user-data-back.<family>" marks a
+// move back into the package. Without a packaged folder, an existing profile
+// in the real Roaming folder is used.
+func msixDataFolder(local, appData string) string {
+	family := strings.ToLower(windowsPackageFamily)
+	packaged := filepath.Join(local, "Packages", windowsPackageFamily, "LocalCache", "Roaming", "Claude")
+	moved := filepath.Join(local, "Claude-Data", family)
+	roaming := filepath.Join(appData, "Claude")
+	_, packagedErr := os.Stat(packaged)
+	roamingInfo, roamingErr := os.Stat(roaming)
+	switch {
+	case pathExists(filepath.Join(packaged, ".user-data-back."+family)):
+		return packaged
+	case pathExists(filepath.Join(packaged, ".user-data-left."+family)), holdsClaudeData(moved) && !holdsClaudeData(packaged):
+		return moved
+	case errors.Is(packagedErr, os.ErrNotExist) && roamingErr == nil && roamingInfo.IsDir():
+		return roaming
+	}
+	return packaged
+}
+
+func holdsClaudeData(folder string) bool {
+	return pathExists(filepath.Join(folder, "Local State")) || pathExists(filepath.Join(folder, "config.json"))
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func appendInstallCandidate(candidates []windowsInstall, candidate windowsInstall) []windowsInstall {
