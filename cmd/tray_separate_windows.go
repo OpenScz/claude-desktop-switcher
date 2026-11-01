@@ -206,6 +206,12 @@ func (s *trayState) closeSeparateWindow(name string) {
 			return
 		}
 	}
+	s.closeSeparateWindowNow(name, false)
+}
+
+// closeSeparateWindowNow closes the window without asking; quiet leaves the
+// progress to the aquarium.
+func (s *trayState) closeSeparateWindowNow(name string, quiet bool) {
 	if s.initializingSnapshot() || s.switchingSnapshot() || s.workflowSnapshot() != nil {
 		s.setStatus("Wait for the current operation to finish")
 		return
@@ -214,9 +220,13 @@ func (s *trayState) closeSeparateWindow(name string) {
 	if !ok {
 		return
 	}
+	folder, err := separateWindowFolder(name)
+	if err != nil {
+		return
+	}
 	label := s.cachedProfileDisplayName(name)
 	s.setStatus("Closing the separate window of " + label)
-	card := startNativeOverlay("Closing the separate window...", false, s.launchPath())
+	card := s.overlayUnless(quiet, "Closing the separate window...")
 	err = runner.CloseSeparateWindow(folder)
 	card.Close()
 	if err != nil {
@@ -265,6 +275,12 @@ func (s *trayState) watchSeparateItem(item *systray.MenuItem, name string, stop 
 }
 
 func (s *trayState) openSeparateWindow(name string) {
+	s.openSeparateWindowWith(name, false)
+}
+
+// openSeparateWindowWith opens the account's separate window; quiet leaves the
+// progress to the aquarium.
+func (s *trayState) openSeparateWindowWith(name string, quiet bool) {
 	if s.initializingSnapshot() || s.switchingSnapshot() || s.workflowSnapshot() != nil {
 		s.setStatus("Wait for the current operation to finish")
 		return
@@ -297,7 +313,7 @@ func (s *trayState) openSeparateWindow(name string) {
 		}
 	}
 	s.setStatus("Opening a separate window for " + label)
-	card := startNativeOverlay("Opening a separate window...", false, s.launchPath())
+	card := s.overlayUnless(quiet, "Opening a separate window...")
 	shown := time.Now()
 	err = runner.OpenSeparateWindow(folder, "")
 	if err == nil {

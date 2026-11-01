@@ -57,6 +57,8 @@ type trayState struct {
 	claude             *systray.MenuItem
 	closeMenu          *systray.MenuItem
 	closeMain          *systray.MenuItem
+	aquariumItem       *systray.MenuItem
+	aquarium           *aquariumWindow
 	add                *systray.MenuItem
 	delete             *systray.MenuItem
 	export             *systray.MenuItem
@@ -162,16 +164,20 @@ func (s *trayState) ready() {
 	s.closeMenu = systray.AddMenuItem("Close Claude Desktop", "Close the main Claude window or a separate one")
 	s.closeMain = s.closeMenu.AddSubMenuItem("Main window", "Close the main Claude window")
 	s.closeMenu.Hide()
+	wantAquarium := aquariumWanted()
+	s.aquariumItem = systray.AddMenuItemCheckbox("Show aquarium", "Show the aquarium above the clock: one fish per Claude window", wantAquarium)
 	logs := systray.AddMenuItem("Open logs folder", "Open local diagnostic activity logs")
 	s.version = systray.AddMenuItem("Current version: "+displayVersion(Version), "Open the Claude Desktop Switcher GitHub repository")
 	quit := systray.AddMenuItem("Exit", "Close the tray icon")
 
+	s.aquarium = startAquarium(s, wantAquarium)
 	s.loadAccounts()
 	s.restorePendingIfPresent()
 
 	go s.handleAdd()
 	go s.handleClaude()
 	go s.handleCloseMain()
+	go s.handleAquariumItem()
 	go s.handleBackupExport(s.exportPassword, false)
 	go s.handleBackupExport(s.exportLocal, true)
 	go s.handleBackupImport()
@@ -300,10 +306,12 @@ func (s *trayState) openOrCloseClaude() {
 		s.setStatus("Wait for the current operation to finish")
 		return
 	}
-	go s.toggleClaudeDesktop()
+	go s.toggleClaudeDesktop(false)
 }
 
-func (s *trayState) toggleClaudeDesktop() {
+// toggleClaudeDesktop closes Claude when it runs and opens it otherwise; quiet
+// leaves the progress to the aquarium.
+func (s *trayState) toggleClaudeDesktop(quiet bool) {
 	lock, err := acquireOperationLock("operation")
 	if err != nil {
 		s.finishClaudeAction("Could not update Claude Desktop", err)
@@ -317,7 +325,7 @@ func (s *trayState) toggleClaudeDesktop() {
 	}
 	if running {
 		s.setStatus("Closing Claude Desktop...")
-		overlay := startNativeOverlay("Closing Claude Desktop...", false, s.launchPath())
+		overlay := s.overlayUnless(quiet, "Closing Claude Desktop...")
 		err = s.platform.KillApp()
 		overlay.Close()
 		lock.Release()
@@ -1364,6 +1372,14 @@ func (s *trayState) loadAccounts() {
 	}
 	s.updateSeparateMenuLocked(profiles, active, running, installed && !busy, separate)
 	s.updateCloseMenuLocked(profiles, active, installed && !busy)
+	switch {
+	case !busy:
+		s.aquarium.setAccounts(s.aquariumAccountsLocked(profiles, active, running))
+	case s.initializing && current != "":
+		// Checking the live account takes a few seconds after the tray starts;
+		// until then the account Claude was left on wears the crown.
+		s.aquarium.setAccounts(s.aquariumAccountsLocked(profiles, current, running))
+	}
 	s.updateSessionMenusLocked(profiles, active, running, installed && !busy, recent, recentRead)
 	if !installed {
 		s.setStatus("Claude Desktop is not installed or was not detected")
@@ -1471,6 +1487,15 @@ func (s *trayState) launchPath() string {
 	return platformLaunchPath(s.platform)
 }
 
+// overlayUnless shows the progress overlay, or an overlay that shows nothing
+// when the aquarium draws the progress itself.
+func (s *trayState) overlayUnless(quiet bool, message string) *switchOverlay {
+	if quiet {
+		return &switchOverlay{}
+	}
+	return startNativeOverlay(message, false, s.launchPath())
+}
+
 func (s *trayState) watchAccount(item *systray.MenuItem, name string, stop <-chan struct{}) {
 	for {
 		select {
@@ -1481,45 +1506,51 @@ func (s *trayState) watchAccount(item *systray.MenuItem, name string, stop <-cha
 				return
 			}
 		}
-		if s.activeAccountSnapshot(name) {
-			trayWarning(ProductName, "This account is currently in use. Choose another account or add a new one.")
-			continue
+		s.switchTo(name, true)
+	}
+}
+
+// switchTo puts the account in the main window. ask is false when the
+// aquarium has already asked.
+func (s *trayState) switchTo(name string, ask bool) {
+	if s.activeAccountSnapshot(name) {
+		trayWarning(ProductName, "This account is currently in use. Choose another account or add a new one.")
+		return
+	}
+	label := s.cachedProfileDisplayName(name)
+	if folder, ok := s.separateWindowWith(name); ok {
+		s.offerSeparateWindow(label, folder)
+		return
+	}
+	if running, _ := s.claudeStateSnapshot(); running && ask {
+		title, message := switchPrompt(label, s.workingSessions())
+		if confirmed, err := nativeTrayConfirm(title, message); err != nil || !confirmed {
+			return
 		}
-		label := s.cachedProfileDisplayName(name)
-		if folder, ok := s.separateWindowWith(name); ok {
-			s.offerSeparateWindow(label, folder)
-			continue
+	}
+	s.syncSeparateWindows()
+	if !s.beginSwitch() {
+		s.setStatus("Wait for automatic account setup to finish")
+		return
+	}
+	s.setStatus("Switching to " + label + "...")
+	go func() {
+		err := switchProfileFromTray(name, s.store, s.platform, s.launchPath())
+		if err == nil {
+			s.setTrustedActiveProfile(name)
 		}
-		if running, _ := s.claudeStateSnapshot(); running {
-			title, message := switchPrompt(label, s.workingSessions())
-			if confirmed, err := nativeTrayConfirm(title, message); err != nil || !confirmed {
-				continue
-			}
-		}
-		s.syncSeparateWindows()
-		if !s.beginSwitch() {
-			s.setStatus("Wait for automatic account setup to finish")
-			continue
-		}
-		s.setStatus("Switching to " + label + "...")
-		go func() {
-			err := switchProfileFromTray(name, s.store, s.platform, s.launchPath())
-			if err == nil {
-				s.setTrustedActiveProfile(name)
-			}
-			s.endSwitch()
-			if err != nil {
-				if errors.Is(err, errLiveSessionUnrecognized) || errors.Is(err, errLiveSessionUnverified) {
-					s.setStatus("Switch skipped: the open Claude account could not be identified; no profiles were changed")
-					return
-				}
-				s.setStatus("Account switch error: " + err.Error())
-				trayWarning("Could not switch account", err.Error())
+		s.endSwitch()
+		if err != nil {
+			if errors.Is(err, errLiveSessionUnrecognized) || errors.Is(err, errLiveSessionUnverified) {
+				s.setStatus("Switch skipped: the open Claude account could not be identified; no profiles were changed")
 				return
 			}
-			s.setStatus("Active account: " + label)
-		}()
-	}
+			s.setStatus("Account switch error: " + err.Error())
+			trayWarning("Could not switch account", err.Error())
+			return
+		}
+		s.setStatus("Active account: " + label)
+	}()
 }
 
 func switchProfileFromTray(name string, store *profile.Store, p platform.Platform, iconPath string) error {

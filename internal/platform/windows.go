@@ -325,6 +325,24 @@ func showCommand(minimized bool) uintptr {
 	return windowsSWShow
 }
 
+// ShowMainWindow brings the main Claude window to the front, also from the
+// tray area where closing its window leaves it.
+func (w *windowsPlatform) ShowMainWindow() error {
+	if hwnd, err := w.mainWindow(); err == nil && hwnd != 0 {
+		focusWindow(hwnd)
+		return nil
+	}
+	if w.msix {
+		verb, _ := windows.UTF16PtrFromString("open")
+		target, _ := windows.UTF16PtrFromString("shell:AppsFolder\\" + windowsAUMID)
+		return windows.ShellExecute(0, verb, target, nil, nil, windows.SW_SHOWNORMAL)
+	}
+	if w.executable == "" {
+		return errors.New("claude desktop executable was not detected")
+	}
+	return exec.Command(w.executable).Start()
+}
+
 func (w *windowsPlatform) LoginWindowVisible() (bool, error) {
 	found, err := w.mainWindow()
 	return found != 0, err
