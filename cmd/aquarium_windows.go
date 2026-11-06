@@ -49,20 +49,37 @@ const (
 	spiGetWorkArea  = 0x0030
 	idcArrow        = 32512
 	idcHand         = 32649
+
+	gwlStyle            = -16
+	gwlExStyle          = -20
+	gwHwndPrev          = 3
+	wsCaption           = 0x00C00000
+	wsExTransparent     = 0x00000020
+	wsExToolWindow      = 0x00000080
+	wsExNoActivate      = 0x08000000
+	monitorNearest      = 2
+	swpKeepPlace        = 0x0001 | 0x0002 | 0x0010 | 0x0200
+	aquariumCheckEvery  = 24
+	aquariumDesktopName = "explorer.exe"
 )
 
 var (
-	aquariumTrackMouse   = nativeUser32.NewProc("TrackMouseEvent")
-	aquariumLoadCursor   = nativeUser32.NewProc("LoadCursorW")
-	aquariumSetCursor    = nativeUser32.NewProc("SetCursor")
-	aquariumSystemInfo   = nativeUser32.NewProc("SystemParametersInfoW")
-	aquariumSystemDPI    = nativeUser32.NewProc("GetDpiForSystem")
-	aquariumNotification = windows.NewLazySystemDLL("shell32.dll").NewProc("SHQueryUserNotificationState")
-	aquariumClassOnce    sync.Once
-	aquariumClassErr     error
-	aquariumWndProc      = windows.NewCallback(aquariumWindowProc)
-	aquariumCurrentMu    sync.Mutex
-	aquariumCurrent      *aquariumWindow
+	aquariumTrackMouse  = nativeUser32.NewProc("TrackMouseEvent")
+	aquariumLoadCursor  = nativeUser32.NewProc("LoadCursorW")
+	aquariumSetCursor   = nativeUser32.NewProc("SetCursor")
+	aquariumSystemInfo  = nativeUser32.NewProc("SystemParametersInfoW")
+	aquariumSystemDPI   = nativeUser32.NewProc("GetDpiForSystem")
+	aquariumWindowRect  = nativeUser32.NewProc("GetWindowRect")
+	aquariumWindowLong  = nativeUser32.NewProc("GetWindowLongW")
+	aquariumWindowAbove = nativeUser32.NewProc("GetWindow")
+	aquariumSetPosition = nativeUser32.NewProc("SetWindowPos")
+	aquariumMonitor     = nativeUser32.NewProc("MonitorFromWindow")
+	aquariumMonitorInfo = nativeUser32.NewProc("GetMonitorInfoW")
+	aquariumClassOnce   sync.Once
+	aquariumClassErr    error
+	aquariumWndProc     = windows.NewCallback(aquariumWindowProc)
+	aquariumCurrentMu   sync.Mutex
+	aquariumCurrent     *aquariumWindow
 )
 
 var (
@@ -195,6 +212,7 @@ type aquariumWindow struct {
 	pointerOut time.Time
 	visible    bool
 	fullScreen bool
+	coveredBy  uintptr
 	ticks      int
 }
 
@@ -428,7 +446,7 @@ func (a *aquariumWindow) show(wanted bool) {
 		return
 	}
 	nativeSetTimer.Call(a.hwnd, nativeTimerID, uintptr(aquariumTick.Milliseconds()), 0)
-	a.fullScreen = aquariumFullScreen()
+	a.fullScreen, _ = a.fullScreenProgram()
 	if !a.fullScreen {
 		a.render()
 		nativeShowWindow.Call(a.hwnd, nativeSWShowNoActivate)
@@ -436,28 +454,152 @@ func (a *aquariumWindow) show(wanted bool) {
 	}
 }
 
-// A game, a video or a presentation in full screen hides the aquarium.
-func aquariumFullScreen() bool {
-	if aquariumNotification.Find() != nil {
+// fullScreenProgram tells whether the window in front fills the aquarium's
+// screen: a game, a video or a presentation. A maximized window keeps its
+// title bar, and the desktop, Alt+Tab and Task View belong to Explorer, so
+// none of them count. Windows' own notification state was not used: it also
+// reports full screen for a window left on another screen or behind others.
+func (a *aquariumWindow) fullScreenProgram() (bool, string) {
+	front := uintptr(windows.GetForegroundWindow())
+	if front == 0 || windowLong(front, gwlStyle)&wsCaption == wsCaption {
+		return false, ""
+	}
+	screen := aquariumScreen(a.hwnd)
+	window := windowRect(front)
+	if window.left > screen.left || window.top > screen.top || window.right < screen.right || window.bottom < screen.bottom {
+		return false, ""
+	}
+	program := windowProgram(front)
+	if strings.EqualFold(program, aquariumDesktopName) {
+		return false, ""
+	}
+	if program == "" {
+		program = "a program"
+	}
+	return true, program
+}
+
+// keepOnTop puts the aquarium back in front when a window covers the bowl:
+// any window once Windows drops the aquarium's always-on-top flag, or another
+// program's always-on-top window. Menus, tooltips, click-through overlays and
+// Explorer's pop-ups stay in front; the desktop never does.
+func (a *aquariumWindow) keepOnTop() {
+	onTop := windowLong(a.hwnd, gwlExStyle)&nativeWSExTopmost != 0
+	bowl := nativeRect{left: int32(a.x + a.bowl.X), top: int32(a.y + a.bowl.Y), right: int32(a.x + a.width), bottom: int32(a.y + a.height)}
+	cover := uintptr(0)
+	for above, _, _ := aquariumWindowAbove.Call(a.hwnd, gwHwndPrev); above != 0 && cover == 0; above, _, _ = aquariumWindowAbove.Call(above, gwHwndPrev) {
+		if aquariumCovers(above, bowl, onTop) {
+			cover = above
+		}
+	}
+	if onTop && cover == 0 {
+		a.coveredBy = 0
+		return
+	}
+	aquariumSetPosition.Call(a.hwnd, ^uintptr(0), 0, 0, 0, 0, swpKeepPlace)
+	// One line per covering window: a window that keeps coming back on top
+	// would otherwise write every two seconds.
+	reason, key := "Windows had dropped its always-on-top flag", a.hwnd
+	if cover != 0 {
+		reason, key = windowProgram(cover)+" ("+windowClass(cover)+") was over it", cover
+	}
+	if key != a.coveredBy {
+		a.coveredBy = key
+		a.tray.setStatus("Aquarium brought back on top: " + reason)
+	}
+}
+
+func aquariumCovers(window uintptr, bowl nativeRect, onTop bool) bool {
+	if !windows.IsWindowVisible(windows.HWND(window)) {
 		return false
 	}
-	var state uint32
-	if result, _, _ := aquariumNotification.Call(uintptr(unsafe.Pointer(&state))); result != 0 {
+	var cloaked uint32
+	if windows.DwmGetWindowAttribute(windows.HWND(window), windows.DWMWA_CLOAKED, unsafe.Pointer(&cloaked), 4) == nil && cloaked != 0 {
 		return false
 	}
-	return state == 2 || state == 3 || state == 4
+	r := windowRect(window)
+	if r.right <= bowl.left || r.left >= bowl.right || r.bottom <= bowl.top || r.top >= bowl.bottom {
+		return false
+	}
+	var pid uint32
+	windows.GetWindowThreadProcessId(windows.HWND(window), &pid)
+	if pid == uint32(os.Getpid()) {
+		return false
+	}
+	class := windowClass(window)
+	if class == "Progman" || class == "WorkerW" {
+		return true
+	}
+	if !onTop {
+		return true
+	}
+	return windowLong(window, gwlExStyle)&(wsExToolWindow|wsExTransparent|wsExNoActivate) == 0 &&
+		class != "#32768" && !strings.EqualFold(windowProgram(window), aquariumDesktopName)
+}
+
+func windowLong(window uintptr, index int32) uint32 {
+	value, _, _ := aquariumWindowLong.Call(window, uintptr(index))
+	return uint32(value)
+}
+
+func windowRect(window uintptr) nativeRect {
+	var r nativeRect
+	aquariumWindowRect.Call(window, uintptr(unsafe.Pointer(&r)))
+	return r
+}
+
+func aquariumScreen(window uintptr) nativeRect {
+	info := struct {
+		size          uint32
+		monitor, work nativeRect
+		flags         uint32
+	}{}
+	info.size = uint32(unsafe.Sizeof(info))
+	monitor, _, _ := aquariumMonitor.Call(window, monitorNearest)
+	aquariumMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&info)))
+	return info.monitor
+}
+
+func windowClass(window uintptr) string {
+	name := make([]uint16, 256)
+	count, _ := windows.GetClassName(windows.HWND(window), &name[0], int32(len(name)))
+	return windows.UTF16ToString(name[:count])
+}
+
+// windowProgram names a window's program; protected ones, such as some games'
+// anti-cheat, do not tell.
+func windowProgram(window uintptr) string {
+	var pid uint32
+	windows.GetWindowThreadProcessId(windows.HWND(window), &pid)
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(process)
+	path := make([]uint16, windows.MAX_LONG_PATH)
+	size := uint32(len(path))
+	if windows.QueryFullProcessImageName(process, 0, &path[0], &size) != nil {
+		return ""
+	}
+	return filepath.Base(windows.UTF16ToString(path[:size]))
 }
 
 func (a *aquariumWindow) tick() {
 	a.ticks++
-	if a.ticks%24 == 0 {
+	if a.ticks%aquariumCheckEvery == 0 {
 		a.place()
-		if full := aquariumFullScreen(); full != a.fullScreen {
+		if full, program := a.fullScreenProgram(); full != a.fullScreen {
 			a.fullScreen = full
 			if full {
 				nativeShowWindow.Call(a.hwnd, nativeSWHide)
 				a.visible = false
+				a.tray.setStatus("Aquarium hidden while " + program + " fills the screen")
+			} else {
+				a.tray.setStatus("Aquarium shown again: nothing fills the screen")
 			}
+		}
+		if !a.fullScreen {
+			a.keepOnTop()
 		}
 	}
 	if a.fullScreen {
