@@ -775,7 +775,9 @@ func TestOperationLockWaitsForPreviousOwnerToExit(t *testing.T) {
 		close(released)
 	}()
 
-	second, err := acquireOperationLockWithWait("test-operation", time.Second)
+	// The wait ends as soon as the lock is free; the ceiling only matters on a
+	// busy runner, where the release can come well after 100 ms.
+	second, err := acquireOperationLockWithWait("test-operation", 10*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
