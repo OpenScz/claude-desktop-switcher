@@ -7,6 +7,40 @@ import (
 	"time"
 )
 
+func TestCloseMovesIntoASubmenuWhileASeparateWindowIsOpen(t *testing.T) {
+	tests := []struct {
+		running, separateOpen, want bool
+	}{
+		{false, false, true},
+		{true, false, true},
+		{true, true, false},
+		{false, true, true},
+	}
+	for _, test := range tests {
+		if got := claudeItemVisible(test.running, test.separateOpen); got != test.want {
+			t.Fatalf("claudeItemVisible(running=%v, separateOpen=%v) = %v, want %v", test.running, test.separateOpen, got, test.want)
+		}
+	}
+}
+
+func TestWindowTitleNamesTheAccount(t *testing.T) {
+	tests := []struct {
+		label string
+		main  bool
+		want  string
+	}{
+		{"office@accounts.test", true, "office@accounts.test (main window)"},
+		{"", true, "Main window"},
+		{"private@accounts.test", false, "private@accounts.test (separate window)"},
+		{"R&D", false, "R&&D (separate window)"},
+	}
+	for _, test := range tests {
+		if got := windowTitle(test.label, test.main); got != test.want {
+			t.Fatalf("windowTitle(%q, %v) = %q, want %q", test.label, test.main, got, test.want)
+		}
+	}
+}
+
 func TestTrayLockRejectsDuplicateImmediately(t *testing.T) {
 	t.Setenv("USERPROFILE", t.TempDir())
 	first, err := acquireTrayLock()
