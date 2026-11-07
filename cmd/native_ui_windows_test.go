@@ -94,14 +94,32 @@ type fakeHideableMenuItem struct {
 	events []string
 }
 
-func (f *fakeHideableMenuItem) Disable() { f.events = append(f.events, "disable") }
-func (f *fakeHideableMenuItem) Hide()    { f.events = append(f.events, "hide") }
+func (f *fakeHideableMenuItem) Disable()        { f.events = append(f.events, "disable") }
+func (f *fakeHideableMenuItem) Hide()           { f.events = append(f.events, "hide") }
+func (f *fakeHideableMenuItem) Enable()         { f.events = append(f.events, "enable") }
+func (f *fakeHideableMenuItem) Show()           { f.events = append(f.events, "show") }
+func (f *fakeHideableMenuItem) SetTitle(string) { f.events = append(f.events, "title") }
 
 func TestRetireMenuItemHidesAfterItsFinalUpdate(t *testing.T) {
 	item := &fakeHideableMenuItem{}
 	retireMenuItem(item)
 	if len(item.events) != 2 || item.events[0] != "disable" || item.events[1] != "hide" {
 		t.Fatalf("events = %v", item.events)
+	}
+}
+
+// A title or state change would put a hidden row back in the menu, which
+// closes the menu if it is open.
+func TestHiddenMenuRowIsOnlyHidden(t *testing.T) {
+	item := &fakeHideableMenuItem{}
+	updateMenuRow(item, false, "Close Claude Desktop", true)
+	if strings.Join(item.events, ",") != "hide" {
+		t.Fatalf("hidden row events = %v", item.events)
+	}
+	item.events = nil
+	updateMenuRow(item, true, "Close Claude Desktop", false)
+	if got := strings.Join(item.events, ","); got != "title,disable,show" {
+		t.Fatalf("shown row events = %v", got)
 	}
 }
 

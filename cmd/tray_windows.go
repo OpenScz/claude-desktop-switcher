@@ -1287,7 +1287,7 @@ func (s *trayState) loadAccounts() {
 	}
 	if len(profiles) == 0 {
 		s.root.Hide()
-		retireMenuItem(s.delete)
+		s.delete.Hide()
 	} else {
 		s.root.Show()
 		s.delete.Show()
@@ -1380,6 +1380,30 @@ func retireMenuItem(item hideableMenuItem) {
 	item.Hide()
 }
 
+type menuRow interface {
+	hideableMenuItem
+	SetTitle(string)
+	Enable()
+	Show()
+}
+
+// systray puts a hidden item back whenever its title or state changes, and
+// adding or removing a row of the main menu closes it while it is open, so a
+// row that stays hidden is only hidden again.
+func updateMenuRow(item menuRow, visible bool, title string, enabled bool) {
+	if !visible {
+		item.Hide()
+		return
+	}
+	item.SetTitle(title)
+	if enabled {
+		item.Enable()
+	} else {
+		item.Disable()
+	}
+	item.Show()
+}
+
 func stopMenuWatcher(stops map[string]chan struct{}, name string) {
 	if stop, ok := stops[name]; ok {
 		close(stop)
@@ -1392,17 +1416,7 @@ func (s *trayState) updateClaudeMenuLocked(busy bool) {
 		return
 	}
 	title, enabled := claudeMenuState(s.claudeInstalled, s.claudeRunning, busy)
-	s.claude.SetTitle(title)
-	if enabled {
-		s.claude.Enable()
-	} else {
-		s.claude.Disable()
-	}
-	if claudeItemVisible(s.claudeRunning, s.separateOpen) {
-		s.claude.Show()
-	} else {
-		s.claude.Hide()
-	}
+	updateMenuRow(s.claude, claudeItemVisible(s.claudeRunning, s.separateOpen), title, enabled)
 }
 
 // While a separate window is open, the main window closes from the submenu
