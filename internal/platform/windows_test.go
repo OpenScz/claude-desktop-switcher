@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -228,5 +229,138 @@ func TestShowCommandKeepsAMaximizedWindowMaximized(t *testing.T) {
 func TestEnumTopLevelWindowsCanRunMoreTimesThanGoAllowsCallbacks(t *testing.T) {
 	for range 2500 {
 		enumTopLevelWindows(func(uintptr) bool { return false })
+	}
+}
+
+func TestMainInstanceIgnoresClaudeWindowsWithTheirOwnDataFolder(t *testing.T) {
+	processes := []windowsProcess{
+		{pid: 100, parent: 4},
+		{pid: 101, parent: 100},
+		{pid: 102, parent: 100},
+		{pid: 103, parent: 102},
+		{pid: 200, parent: 50},
+		{pid: 201, parent: 200},
+		{pid: 202, parent: 201},
+		{pid: 300, parent: 777},
+	}
+	var asked []int
+	got := mainInstanceProcesses(processes, func(pid int) bool {
+		asked = append(asked, pid)
+		return pid == 200
+	})
+	var pids []int
+	for _, process := range got {
+		pids = append(pids, process.pid)
+	}
+	if want := []int{100, 101, 102, 103, 300}; !reflect.DeepEqual(pids, want) {
+		t.Fatalf("main window processes = %v, want %v", pids, want)
+	}
+	if want := []int{100, 200, 300}; !reflect.DeepEqual(asked, want) {
+		t.Fatalf("command lines read for %v, want only the roots %v", asked, want)
+	}
+}
+
+func TestInstanceProcessesKeepOnlyTheChosenWindowsTree(t *testing.T) {
+	processes := []windowsProcess{
+		{pid: 100, parent: 4},
+		{pid: 101, parent: 100},
+		{pid: 200, parent: 50},
+		{pid: 201, parent: 200},
+		{pid: 202, parent: 201},
+	}
+	var asked []int
+	got := instanceProcesses(processes, func(root int) bool {
+		asked = append(asked, root)
+		return root == 200
+	})
+	var pids []int
+	for _, process := range got {
+		pids = append(pids, process.pid)
+	}
+	if want := []int{200, 201, 202}; !reflect.DeepEqual(pids, want) {
+		t.Fatalf("window processes = %v, want %v", pids, want)
+	}
+	if want := []int{100, 200}; !reflect.DeepEqual(asked, want) {
+		t.Fatalf("roots asked %v, want %v", asked, want)
+	}
+}
+
+func TestMainInstanceSurvivesAParentLoop(t *testing.T) {
+	processes := []windowsProcess{{pid: 1, parent: 2}, {pid: 2, parent: 1}}
+	if got := mainInstanceProcesses(processes, func(int) bool { return false }); len(got) != 2 {
+		t.Fatalf("processes = %v", got)
+	}
+}
+
+func TestSeparateDataFolderLooksOnlyAtArguments(t *testing.T) {
+	home := t.TempDir()
+	mainFolder := filepath.Join(home, "Packages", "Claude_pzs8sxrjxfjjc", "LocalCache", "Roaming", "Claude")
+	virtualFolder := filepath.Join(home, "Roaming", "Claude")
+	executable := filepath.Join(home, "WindowsApps", "Claude_2.42304.0.0_x64__pzs8sxrjxfjjc", "app", "Claude.exe")
+	quoted := func(value string) string { return `"` + value + `"` }
+	separate := filepath.Join(home, "Claude-Accounts", "Main-account")
+	tests := []struct {
+		name        string
+		commandLine string
+		want        string
+	}{
+		{"main window", quoted(executable), ""},
+		{"separate window", quoted(executable) + " --user-data-dir=" + quoted(separate), separate},
+		{"main window helper", quoted(executable) + " --type=renderer --user-data-dir=" + quoted(virtualFolder) + " --lang=en-US", ""},
+		{"main folder in capitals", quoted(executable) + " --user-data-dir=" + quoted(strings.ToUpper(mainFolder)), ""},
+		{"deep link", quoted(executable) + " claude://code/continue?session=local_1", ""},
+		{"flag inside the program path", quoted(filepath.Join(home, "--user-data-dir=x", "Claude.exe")), ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := separateDataFolder(test.commandLine, mainFolder, virtualFolder); got != test.want {
+				t.Fatalf("separateDataFolder(%q) = %q, want %q", test.commandLine, got, test.want)
+			}
+		})
+	}
+}
+
+func TestProcessCommandLineReadsARunningProcess(t *testing.T) {
+	commandLine, err := processCommandLine(uint32(os.Getpid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ToLower(commandLine), strings.ToLower(filepath.Base(executable))) {
+		t.Fatalf("command line %q does not name %s", commandLine, filepath.Base(executable))
+	}
+}
+
+func TestManifestExecutableStaysInsideThePackage(t *testing.T) {
+	manifest := []byte(`<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">
+  <Applications>
+    <Application Id="SshProxy" Executable="app/resources/claude-ssh-proxy.exe" EntryPoint="Windows.FullTrustApplication"/>
+    <Application Id="Claude" Executable="app/Claude.exe" EntryPoint="Windows.FullTrustApplication"/>
+  </Applications>
+</Package>`)
+	got, err := manifestExecutable(manifest, "Claude")
+	if err != nil || got != filepath.Join("app", "Claude.exe") {
+		t.Fatalf("manifestExecutable = %q, %v", got, err)
+	}
+	escaping := []byte(`<Package><Applications><Application Id="Claude" Executable="../../evil.exe"/></Applications></Package>`)
+	if got, err := manifestExecutable(escaping, "Claude"); err == nil {
+		t.Fatalf("an executable outside the package was accepted: %q", got)
+	}
+}
+
+func TestClaudeExecutableFromTheInstalledPackage(t *testing.T) {
+	if _, err := packageInstallPath(windowsPackageFamily); err != nil {
+		t.Skip("Claude Desktop from the Store is not installed here")
+	}
+	executable, err := (&windowsPlatform{msix: true}).claudeExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(executable); err != nil || info.IsDir() || !strings.EqualFold(filepath.Base(executable), processName) {
+		t.Fatalf("executable %q: %v", executable, err)
 	}
 }

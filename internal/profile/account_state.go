@@ -98,6 +98,10 @@ func primaryAccountUUIDHash(state accountState) string {
 	return accountIdentifierHash(state.CoworkOwner)
 }
 
+func AccountUUIDHashAt(appDataPath string) string {
+	return primaryAccountUUIDHashAt(appDataPath)
+}
+
 func primaryAccountUUIDHashAt(appDataPath string) string {
 	config, _, err := readJSONObject(filepath.Join(appDataPath, claudeConfigFile))
 	if err == nil {
@@ -136,6 +140,10 @@ func accountIdentifierHash(value json.RawMessage) string {
 	if len(value) == 0 || json.Unmarshal(value, &identifier) != nil {
 		return ""
 	}
+	return AccountUUIDHash(identifier)
+}
+
+func AccountUUIDHash(identifier string) string {
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
 	if identifier == "" || len(identifier) > 256 {
 		return ""
